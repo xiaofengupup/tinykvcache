@@ -35,6 +35,7 @@ endif()
 # tinykv 核心库
 add_library(tinykv STATIC
     src/core/frame_codec.cpp
+    src/core/command.cpp
 )
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -62,5 +63,14 @@ if (TINYKV_BUILD_TESTS)
         tinykv
     )
     add_test(NAME frame_codec COMMAND test_frame_codec)
+
+    # 命令解析测试
+    add_executable(test_command
+        tests/test_command.cpp
+    )
+    target_link_libraries(test_command PRIVATE
+        tinykv
+    )
+    add_test(NAME command COMMAND test_command)
 
 endif()
