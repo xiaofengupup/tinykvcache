@@ -1,0 +1,28 @@
+# Build output ---- 不把 cmake构建产物 提交到 git
+build/
+cmake-build-*/
+out/
+
+# Object files ---- 不把 中间编译产物 提交到 git
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+
+# Executables ---- 不把 可执行文件 提交到 git
+*.exe
+
+# macos
+.DS_store
+
+# Debug symbols ---- 不把 调试文件 提交到 git
+*.dSYM/
+
+# IDE          ---- 不把 IDE 配置 提交到 git
+.vscode/
+.idea/
+
+# Logs         ---- 不把 日志文件 提交到 git
+*.log
