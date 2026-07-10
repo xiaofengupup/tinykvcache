@@ -32,25 +32,35 @@ else()
     )
 endif()
 
-# Header-only placeholder target for phase 0.
-# In later phases, this will become a real static library with .cpp files.
-add_library(tinykv INTERFACE)
-
-target_include_directories(tinykv INTERFACE
+# tinykv 核心库
+add_library(tinykv STATIC
+    src/core/frame_codec.cpp
+)
+target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-
-target_link_libraries(tinykv INTERFACE tinykv_options)
+target_link_libraries(tinykv PUBLIC tinykv_options)
 
 # 测试相关
 if (TINYKV_BUILD_TESTS)
     enable_testing()
+
+    # 冒烟测试
     add_executable(test_smoke
         tests/test_smoke.cpp
     )
     target_link_libraries(test_smoke PRIVATE
         tinykv
     )
-
     add_test(NAME smoke COMMAND test_smoke)
+
+    # 帧解析测试
+    add_executable(test_frame_codec
+        tests/test_frame_codec.cpp
+    )
+    target_link_libraries(test_frame_codec PRIVATE
+        tinykv
+    )
+    add_test(NAME frame_codec COMMAND test_frame_codec)
+
 endif()
