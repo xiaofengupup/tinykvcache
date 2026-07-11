@@ -35,7 +35,8 @@ endif()
 # tinykv 核心库
 add_library(tinykv STATIC
     src/core/frame_codec.cpp
-    src/core/command.cpp
+    src/core/command_parser.cpp
+    src/core/kv_store.cpp
 )
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -65,12 +66,21 @@ if (TINYKV_BUILD_TESTS)
     add_test(NAME frame_codec COMMAND test_frame_codec)
 
     # 命令解析测试
-    add_executable(test_command
-        tests/test_command.cpp
+    add_executable(test_command_parser
+        tests/test_command_parser.cpp
     )
-    target_link_libraries(test_command PRIVATE
+    target_link_libraries(test_command_parser PRIVATE
         tinykv
     )
-    add_test(NAME command COMMAND test_command)
+    add_test(NAME command_parser COMMAND test_command_parser)
+
+    ## kv 内存存储测试
+    add_executable(test_kv_store
+        tests/test_kv_store.cpp
+    )
+    target_link_libraries(test_kv_store PRIVATE
+        tinykv
+    )
+    add_test(NAME kv_store COMMAND test_kv_store)
 
 endif()
