@@ -46,6 +46,21 @@ target_include_directories(tinykv PUBLIC
 )
 target_link_libraries(tinykv PUBLIC tinykv_options)
 
+add_executable(tinykv_client
+    app/client_main.cpp
+)
+target_link_libraries(tinykv_client PRIVATE
+    tinykv
+)
+
+add_executable(debug_echo_server
+    app/debug_echo_server.cpp
+)
+
+target_link_libraries(debug_echo_server PRIVATE
+    tinykv
+)
+
 # 测试相关
 if (TINYKV_BUILD_TESTS)
     enable_testing()
