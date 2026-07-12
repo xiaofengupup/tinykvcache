@@ -126,4 +126,14 @@ if (TINYKV_BUILD_TESTS)
         tinykv
     )
     add_test(NAME socket_util COMMAND test_socket_util)
+
+    add_executable(test_command_executor
+        tests/test_command_executor.cpp
+    )
+
+    target_link_libraries(test_command_executor PRIVATE
+        tinykv
+    )
+
+    add_test(NAME command_executor COMMAND test_command_executor)
 endif()

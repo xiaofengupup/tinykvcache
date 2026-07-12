@@ -38,7 +38,9 @@ std::string CommandExecutor::Execute(KVStore &store, const Command &command)
         }
         case CommandType::Stats: {
             KVStore::InnerStats stats = store.Stats();
-            return "+keys=" + std::to_string(stats.keys);
+            return "+keys=" + std::to_string(stats.keys) +
+               ",persistent=" + std::to_string(stats.persistentKeys) +
+               ",expiring=" + std::to_string(stats.expiringKeys);
         }
         case CommandType::Quit:
             return "+BYE";
