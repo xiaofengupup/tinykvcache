@@ -35,7 +35,7 @@ ScopedFd CreateListenSocket(const std::string &host, int port, int backlog)
 
     // 设置 SO_REUSEADDR，允许端口快速复用
     int opt = 1;
-    if (::setsockopt(socketFd.get(), SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    if (::setsockopt(socketFd.Get(), SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         throw std::runtime_error("setsockopt(SO_REUSEADDR) failed: " + std::string(std::strerror(errno)));
     }
 
@@ -47,12 +47,12 @@ ScopedFd CreateListenSocket(const std::string &host, int port, int backlog)
         throw std::runtime_error("inet_pton() failed: " + std::string(std::strerror(errno)));
     }
 
-    if (::bind(socketFd.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::bind(socketFd.Get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         throw std::runtime_error("bind() failed: " + std::string(std::strerror(errno)));
     }
 
     // 开始监听
-    if (::listen(socketFd.get(), backlog) < 0) {
+    if (::listen(socketFd.Get(), backlog) < 0) {
         throw std::runtime_error("listen() failed: " + std::string(std::strerror(errno)));
     }
 
@@ -78,10 +78,11 @@ ScopedFd ConnectToServer(const std::string &host, int port)
     }
 
     // 连接服务器
-    if (::connect(socketFd.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::connect(socketFd.Get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         throw std::runtime_error("connect() failed: " + std::string(std::strerror(errno)));
     }
 
     return socketFd;
+}
 
 } // namespace tinykv

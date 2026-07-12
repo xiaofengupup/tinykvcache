@@ -27,6 +27,9 @@ void TestSetNonBlocking()
     assert(server.Valid());
 
     tinykv::SetNonBlocking(server.Get());
+}
+
+} // namespace
 
 int main()
 {

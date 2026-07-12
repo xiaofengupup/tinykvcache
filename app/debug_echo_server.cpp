@@ -3,6 +3,7 @@
 
 #include <sys/socket.h>
 #include <iostream>
+#include <netinet/in.h>
 
 int main()
 {
