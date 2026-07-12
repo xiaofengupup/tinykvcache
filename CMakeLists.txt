@@ -37,6 +37,7 @@ add_library(tinykv STATIC
     src/core/frame_codec.cpp
     src/core/command_parser.cpp
     src/core/kv_store.cpp
+    src/core/command_executor.cpp
 
     src/net/scoped_fd.cpp
     src/net/socket_util.cpp
@@ -50,6 +51,13 @@ add_executable(tinykv_client
     app/client_main.cpp
 )
 target_link_libraries(tinykv_client PRIVATE
+    tinykv
+)
+
+add_executable(tinykv_server
+    app/server_main.cpp
+)
+target_link_libraries(tinykv_server PRIVATE
     tinykv
 )
 
