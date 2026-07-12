@@ -85,7 +85,7 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME kv_store COMMAND test_kv_store)
 
-    # ScopedFD 测试
+    # ScopedFd 测试
     add_executable(test_scoped_fd
         tests/test_scoped_fd.cpp
     )

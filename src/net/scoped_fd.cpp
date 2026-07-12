@@ -3,14 +3,14 @@
 
 namespace tinykv {
 
-ScopedFD::ScopedFD(int fd) noexcept : m_fd(fd) {}
+ScopedFd::ScopedFd(int fd) noexcept : m_fd(fd) {}
 
 ScopedFd::~ScopedFd()
 {
     Reset();
 }
 
-ScopedFD::ScopedFD(ScopedFD &&other) noexcept : m_fd(other.Release()) {}
+ScopedFd::ScopedFd(ScopedFd &&other) noexcept : m_fd(other.Release()) {}
 
 ScopedFd& ScopedFd::operator=(ScopedFd&& other) noexcept
 {
@@ -20,29 +20,29 @@ ScopedFd& ScopedFd::operator=(ScopedFd&& other) noexcept
     return *this;
 }
 
-int ScopedFD::Get() const noexcept
+int ScopedFd::Get() const noexcept
 {
     return m_fd;
 }
 
-bool ScopedFD::Valid() const noexcept
+bool ScopedFd::Valid() const noexcept
 {
     return m_fd >= 0;
 }
 
-ScopedFD::operator bool() const noexcept
+ScopedFd::operator bool() const noexcept
 {
     return Valid();
 }
 
-int ScopedFD::Release() noexcept
+int ScopedFd::Release() noexcept
 {
     const int oldFd = m_fd;
     m_fd = INVALID_FD;
     return oldFd;
 }
 
-void ScopedFD::Reset(int newFd) noexcept
+void ScopedFd::Reset(int newFd) noexcept
 {
     // 如果 reset 到同一个 fd，直接不做任何操作。
     if (m_fd == newFd) {

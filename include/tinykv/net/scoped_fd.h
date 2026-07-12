@@ -7,11 +7,11 @@
 namespace tinykv {
 
 /**
- * ScopedFD 是一个 RAII 类，用于管理文件描述符（fd）的生命周期。
+ * ScopedFd 是一个 RAII 类，用于管理文件描述符（fd）的生命周期。
  * 
- * 当 ScopedFD 对象被销毁时，它会自动关闭所管理的文件描述符，确保资源的正确释放，避免文件描述符泄漏。
+ * 当 ScopedFd 对象被销毁时，它会自动关闭所管理的文件描述符，确保资源的正确释放，避免文件描述符泄漏。
  */
-class ScopedFD {
+class ScopedFd {
 public:
     /**
      * Unix/Linux/macOS 中，合法 fd 一般是非负整数：
@@ -22,14 +22,14 @@ public:
      */
     static constexpr int INVALID_FD = -1; // 无效的文件描述符
 
-    ScopedFD() noexcept = default;
+    ScopedFd() noexcept = default;
 
     /**
      * 接管一个已有的 fd
      * 
      * 注意：调用者把 fd 传递进来之后，就不应该在手动关闭这个 fd
      */
-    explicit ScopedFD(int fd) noexcept;
+    explicit ScopedFd(int fd) noexcept;
 
     /**
      * 禁止拷贝构造和拷贝赋值
@@ -37,21 +37,21 @@ public:
      * 如果允许拷贝，就可能出现两个 ScopedFd 管理同一个 fd
      * 两个对象析构时都会 close，导致 double close。
      */
-    ScopedFD(const ScopedFD &) = delete;
-    ScopedFD &operator=(const ScopedFD &) = delete;
+    ScopedFd(const ScopedFd&) = delete;
+    ScopedFd& operator=(const ScopedFd&) = delete;
 
     /**
      * 允许移动
      * 
      * 移动表示 fd 所有权从一个对象转移到另一个对象。
      */
-    ScopedFD(ScopedFD &&other) noexcept;
-    ScopedFD &operator=(ScopedFD &&other) noexcept;
+    ScopedFd(ScopedFd&& other) noexcept;
+    ScopedFd& operator=(ScopedFd&& other) noexcept;
 
     /**
      * 析构时自动关闭当前持有的 fd
      */
-    ~ScopedFD();
+    ~ScopedFd();
 
 public:
     int Get() const noexcept; // 获取当前持有的 fd
