@@ -39,6 +39,7 @@ add_library(tinykv STATIC
     src/core/kv_store.cpp
 
     src/net/scoped_fd.cpp
+    src/net/socket_util.cpp
 )
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -93,4 +94,13 @@ if (TINYKV_BUILD_TESTS)
         tinykv
     )
     add_test(NAME scoped_fd COMMAND test_scoped_fd)
+
+    # SocketUtil 测试
+    add_executable(test_socket_util
+        tests/test_socket_util.cpp
+    )
+    target_link_libraries(test_socket_util PRIVATE
+        tinykv
+    )
+    add_test(NAME socket_util COMMAND test_socket_util)
 endif()
