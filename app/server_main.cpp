@@ -50,7 +50,7 @@ int main(int argc, char *argv[])
             sockaddr_in clientAddr;
             socklen_t len = sizeof(clientAddr);
 
-            int clientFd = ::accept(listenFd, reinterpret_cast<sockaddr *>(&clientAddr), &len);
+            int clientFd = ::accept(listenFd.Get(), reinterpret_cast<sockaddr *>(&clientAddr), &len);
             if (clientFd < 0) {
                 throw std::runtime_error("accept failed");
             }
@@ -69,18 +69,17 @@ int main(int argc, char *argv[])
                 auto frames = tinykv::FrameCodec::Decode(buffer, temp, static_cast<size_t>(n));
                 for (const auto &frame : frames) {
                     auto command = tinykv::ParseCommand(frame);
-                    auto response = tinkv::CommandExecutor::Execute(store, command);
+                    auto response = tinykv::CommandExecutor::Execute(store, command);
 
                     SendResponse(client.Get(), response);
-                }
-
-                if(command.type == tinykv::CommandType::Quit) {
-                    return 0;
+                    if(command.type == tinykv::CommandType::Quit) {
+                        return 0;
+                    }
                 }
             }
-        }
 
-        std::cout << "client disconnected\n";
+            std::cout << "client disconnected\n";
+        }        
     } catch (const std::exception &e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
