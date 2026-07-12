@@ -37,6 +37,8 @@ add_library(tinykv STATIC
     src/core/frame_codec.cpp
     src/core/command_parser.cpp
     src/core/kv_store.cpp
+
+    src/net/scoped_fd.cpp
 )
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -74,7 +76,7 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME command_parser COMMAND test_command_parser)
 
-    ## kv 内存存储测试
+    # kv 内存存储测试
     add_executable(test_kv_store
         tests/test_kv_store.cpp
     )
@@ -83,4 +85,12 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME kv_store COMMAND test_kv_store)
 
+    # ScopedFD 测试
+    add_executable(test_scoped_fd
+        tests/test_scoped_fd.cpp
+    )
+    target_link_libraries(test_scoped_fd PRIVATE
+        tinykv
+    )
+    add_test(NAME scoped_fd COMMAND test_scoped_fd)
 endif()
