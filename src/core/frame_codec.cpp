@@ -1,5 +1,6 @@
 #include "tinykv/core/frame_codec.h"
 
+#include <cstring>
 #include <cstdint>
 #include <stdexcept>
 #include <arpa/inet.h>

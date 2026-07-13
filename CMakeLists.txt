@@ -5,6 +5,8 @@ project(TinyKVCache
     DESCRIPTION "A tiny C++17 TCP key-value cache server"
     LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 # 使用 C++ 17
 set(CMAKE_CXX_STANDARD 17)              # 使用 C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)     # 必须使用 C++ 17
@@ -46,7 +48,10 @@ add_library(tinykv STATIC
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(tinykv PUBLIC tinykv_options)
+target_link_libraries(tinykv PUBLIC 
+    tinykv_options
+    Threads::Threads
+)
 
 add_executable(tinykv_client
     app/client_main.cpp
