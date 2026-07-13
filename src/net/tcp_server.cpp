@@ -85,7 +85,7 @@ void TcpServer::Run()
             }
 
 
-            const int ret = ::poll(pollFds.data(), pollFds.size(), 1000);
+            const int ret = ::poll(pollFds.data(), static_cast<nfds_t>(pollFds.size()), 1000);
             if (ret < 0) {
                 if (errno == EINTR) {
                     continue;
