@@ -1,10 +1,11 @@
+#include "test_utils.h"
+
 #include "tinykv/net/socket_util.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <unistd.h>
 
-#include <cassert>
 #include <iostream>
 
 namespace {
@@ -12,19 +13,13 @@ namespace {
 void TestCreateListenSocket()
 {
     auto server = tinykv::CreateListenSocket("127.0.0.1", 0);
-    assert(server.Valid());
-}
-
-void TestConnectToServer()
-{
-    auto server = tinykv::CreateListenSocket("127.0.0.1", 0);
-    assert(server.Valid());
+    TINYKV_CHECK(server.Valid());
 }
 
 void TestSetNonBlocking()
 {
     auto server = tinykv::CreateListenSocket("127.0.0.1", 0);
-    assert(server.Valid());
+    TINYKV_CHECK(server.Valid());
 
     tinykv::SetNonBlocking(server.Get());
 }
