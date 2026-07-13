@@ -60,6 +60,7 @@ add_library(tinykv STATIC
     src/net/scoped_fd.cpp
     src/net/socket_util.cpp
     src/net/tcp_server.cpp
+    src/net/output_buffer.cpp
 )
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -148,15 +149,23 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME socket_util COMMAND test_socket_util)
 
+    # 测试命令执行器
     add_executable(test_command_executor
         tests/test_command_executor.cpp
     )
-
     target_link_libraries(test_command_executor PRIVATE
         tinykv tinykv_test_options
     )
-
     add_test(NAME command_executor COMMAND test_command_executor)
+
+    # 测试 OutputBuffer
+    add_executable(test_output_buffer
+        tests/test_output_buffer.cpp
+    )
+    target_link_libraries(test_output_buffer PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME output_buffer COMMAND test_output_buffer)
 
     set_tests_properties(
         smoke
@@ -166,6 +175,7 @@ if (TINYKV_BUILD_TESTS)
         kv_store
         scoped_fd
         socket_util
+        output_buffer
         PROPERTIES
             LABELS "unit"
             TIMEOUT 10
