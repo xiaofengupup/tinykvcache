@@ -14,6 +14,8 @@
 #include <unistd.h>
 #include <poll.h>
 #include <utility>
+#include <chrono>
+#include <thread>
 
 namespace tinykv {
 
@@ -32,111 +34,129 @@ bool IsWouldBlockError()
 
 }
 
-TcpServer::TcpServer(std::string host, int port) : m_host(std::move(host)), m_port(port) {}
+TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval)
+    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval) {}
+
+TcpServer::~TcpServer()
+{
+    Stop();
+    StopSweeperThread();
+}
 
 void TcpServer::Run()
 {
     m_listenFd = CreateListenSocket(m_host, m_port);
     SetNonBlocking(m_listenFd.Get()); // 核心修改：将 listen fd 设置为非阻塞，这样 accept 不会卡死
-    m_running = true;
+    m_running = true;    
+    StartSweeperThread(); // 启动 TTL 清理线程
     std::cout << "server listenint on " << m_host << ":" << m_port << "\n";
 
-    while (m_running) {
-        std::vector<pollfd> pollFds;
-        pollFds.reserve(1 + m_clients.size());
 
-        // 将 listen fd 加入 poll 关注列表
-        pollfd listenPoll;
-        listenPoll.fd = m_listenFd.Get();
-        listenPoll.events = POLLIN;
-        listenPoll.revents = 0;
-        pollFds.push_back(listenPoll);
+    try {
+        while (m_running) {
+            std::vector<pollfd> pollFds;
+            pollFds.reserve(1 + m_clients.size());
 
-        // 将 client fd 加入 poll 关注列表
-        for (auto& item : m_clients) {
-            Connection &conn = item.second;
-            if (conn.closed) {
+            // 将 listen fd 加入 poll 关注列表
+            pollfd listenPoll;
+            listenPoll.fd = m_listenFd.Get();
+            listenPoll.events = POLLIN;
+            listenPoll.revents = 0;
+            pollFds.push_back(listenPoll);
+
+            // 将 client fd 加入 poll 关注列表
+            for (auto& item : m_clients) {
+                Connection &conn = item.second;
+                if (conn.closed) {
+                    continue;
+                }
+
+                pollfd clientPoll;
+                clientPoll.fd = conn.fd.Get();
+                clientPoll.events = POLLIN;
+                clientPoll.revents = 0;
+                if (!conn.writeBuffer.empty()) {
+                    // 只有当 write_buffer 非空时，才关注 POLLOUT。
+                    // 否则大多数 socket 都会一直可写，导致 poll 频繁返回，浪费 CPU。
+                    clientPoll.events |= POLLOUT;
+                }
+
+                pollFds.push_back(clientPoll);
+            }
+
+
+            const int ret = ::poll(pollFds.data(), pollFds.size(), 1000);
+            if (ret < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                throw std::runtime_error(ErrorMessage("poll failed"));
+            }
+
+            if (ret == 0) {
+                CleanupClosedConnections();
                 continue;
             }
 
-            pollfd clientPoll;
-            clientPoll.fd = conn.fd.Get();
-            clientPoll.events = POLLIN;
-            clientPoll.revents = 0;
-            if (!conn.writeBuffer.empty()) {
-                // 只有当 write_buffer 非空时，才关注 POLLOUT。
-                // 否则大多数 socket 都会一直可写，导致 poll 频繁返回，浪费 CPU。
-                clientPoll.events |= POLLOUT;
+            // 第 0 个永远是 listen fd
+            if ((pollFds[0].revents & POLLIN) != 0) {
+                AcceptNewClients();
             }
 
-            pollFds.push_back(clientPoll);
-        }
+            // 后续都是 client fd
+            for (std::size_t i = 1; i < pollFds.size(); ++i) {
+                const int fd = pollFds[i].fd;
+                const short revents = pollFds[i].revents;
+
+                if (revents == 0) {
+                    continue;
+                }
+                
+                auto it = m_clients.find(fd);
+                if (it == m_clients.end()) {
+                    continue;
+                }
+
+                Connection &conn = it->second;
+                if ((revents & (POLLERR | POLLNVAL)) != 0) {
+                    MarkClosed(conn);
+                    continue;
+                }
 
 
-        const int ret = ::poll(pollFds.data(), pollFds.size(), 1000);
-        if (ret < 0) {
-            if (errno == EINTR) {
-                continue;
+                // 处理读事件
+                if ((revents & POLLIN) != 0) {
+                    HandleClientRead(conn);
+                }
+                if (conn.closed) {
+                    continue;
+                }
+
+                // 处理写事件
+                if ((revents & POLLOUT) != 0) {
+                    HandleClientWrite(conn);
+                }
+                if (conn.closed) {
+                    continue;
+                }
+
+                // 处理中断
+                if ((revents & POLLHUP) != 0) {
+                    MarkClosed(conn);
+                }
             }
-            throw std::runtime_error(ErrorMessage("poll failed"));
-        }
 
-        if (ret == 0) {
             CleanupClosedConnections();
-            continue;
         }
-
-        // 第 0 个永远是 listen fd
-        if ((pollFds[0].revents & POLLIN) != 0) {
-            AcceptNewClients();
-        }
-
-        // 后续都是 client fd
-        for (std::size_t i = 1; i < pollFds.size(); ++i) {
-            const int fd = pollFds[i].fd;
-            const short revents = pollFds[i].revents;
-
-            if (revents == 0) {
-                continue;
-            }
-            
-            auto it = m_clients.find(fd);
-            if (it == m_clients.end()) {
-                continue;
-            }
-
-            Connection &conn = it->second;
-            if ((revents & (POLLERR | POLLNVAL)) != 0) {
-                MarkClosed(conn);
-                continue;
-            }
-
-
-            // 处理读事件
-            if ((revents & POLLIN) != 0) {
-                HandleClientRead(conn);
-            }
-            if (conn.closed) {
-                continue;
-            }
-
-            // 处理写事件
-            if ((revents & POLLOUT) != 0) {
-                HandleClientWrite(conn);
-            }
-            if (conn.closed) {
-                continue;
-            }
-
-            // 处理中断
-            if ((revents & POLLHUP) != 0) {
-                MarkClosed(conn);
-            }
-        }
-
-        CleanupClosedConnections();
-    }
-
+    } catch (...) {
+        StopSweeperThread();
+        m_clients.clear();
+        m_listenFd.Reset();
+        m_running = false;
+        throw;
+    }   
+    
+    StopSweeperThread();
     m_clients.clear();
     m_listenFd.Reset();
 }
@@ -149,6 +169,8 @@ void TcpServer::Stop()
     for (auto &item : m_clients) {
         MarkClosed(item.second);
     }
+
+    StopSweeperThread();
 }
 
 void TcpServer::AcceptNewClients()
@@ -291,6 +313,59 @@ void TcpServer::CleanupClosedConnections()
             ++it;
         }
     } 
+}
+
+void TcpServer::StartSweeperThread()
+{
+    if (m_sweepInterval.count() < 0) {
+        return;
+    }
+
+    bool expected = false;
+    if (!m_sweepRunning.compare_exchange_strong(expected, true)) {
+        // 已经启动过了
+        return;
+    }
+
+    m_sweepThread = std::thread(&TcpServer::SweeperLoop, this);
+}
+
+void TcpServer::StopSweeperThread()
+{
+    const bool wasRunning = m_sweepRunning.exchange(false);
+    if (wasRunning) {
+        m_sweepCv.notify_all();
+    }
+
+    if (m_sweepThread.joinable()) {
+        m_sweepThread.join();
+    }
+}
+
+void TcpServer::SweeperLoop()
+{
+    std::unique_lock<std::mutex> lock(m_sweepMutex);
+
+    while (m_sweepRunning) {
+        const bool shouldStop = m_sweepCv.wait_for(lock, m_sweepInterval, [this] {
+            return !m_sweepRunning.load();
+        });
+
+        if (shouldStop) {
+            break;
+        }
+
+        // 不要持有 sweeper_mutex_ 调用 KVStore。
+        // KVStore 内部有自己的 mutex。
+        lock.unlock();
+
+        const size_t removed = m_store.SweepExpired();
+        if (removed > 0) {
+            std::cout << "[sweeper] removed expired keys: " << removed << "\n";
+        }
+        
+        lock.lock();
+    }
 }
 
 } // namespace tinykv

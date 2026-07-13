@@ -10,14 +10,21 @@
 #include <atomic>
 #include <unordered_map>
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 namespace tinykv {
 
 /**
  * 在第 9 阶段升级为 poll reactor 模型
+ * 在第 10 阶段增加后台 sweeper 线程，用于周期清理过期 key
  */
 class TcpServer {
 public:
-    TcpServer(std::string host, int port);
+    TcpServer(std::string host, int port, std::chrono::seconds sweepInterval = std::chrono::seconds(5));
+    ~TcpServer();
 
     // 禁止移动
     TcpServer(const TcpServer&) = delete;
@@ -68,6 +75,21 @@ private:
     
     void CleanupClosedConnections();
 
+    /**
+     * 启动 TTL 后台清理线程
+     */
+    void StartSweeperThread();
+
+    /**
+     * 停止 TTL 后台清理线程
+     */
+    void StopSweeperThread();
+
+    /**
+     * 后台线程主循环
+     */
+    void SweeperLoop();
+
 private:
     std::string m_host;
     int m_port {0};
@@ -75,6 +97,14 @@ private:
     ScopedFd m_listenFd;
     KVStore  m_store;
     std::unordered_map<int, Connection> m_clients; // key 是 client fd，value 是该连接的状态。
+
+    std::chrono::seconds m_sweepInterval {5};
+    std::atomic_bool m_sweepRunning {false};
+    std::thread m_sweepThread;
+
+    // 用于让 stop_sweeper_thread 能及时唤醒 sweeper_loop。
+    std::mutex m_sweepMutex;
+    std::condition_variable m_sweepCv;
 };
 
 } // namespace tinyky
