@@ -41,6 +41,7 @@ add_library(tinykv STATIC
 
     src/net/scoped_fd.cpp
     src/net/socket_util.cpp
+    src/net/tcp_server.cpp
 )
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -58,14 +59,6 @@ add_executable(tinykv_server
     app/server_main.cpp
 )
 target_link_libraries(tinykv_server PRIVATE
-    tinykv
-)
-
-add_executable(debug_echo_server
-    app/debug_echo_server.cpp
-)
-
-target_link_libraries(debug_echo_server PRIVATE
     tinykv
 )
 
