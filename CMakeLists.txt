@@ -5,6 +5,22 @@ project(TinyKVCache
     DESCRIPTION "A tiny C++17 TCP key-value cache server"
     LANGUAGES CXX)
 
+# 生成 compile_commands.json，方便 clangd、clang-tidy 和 IDE 使用。
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(TINYKV_WARNINGS_AS_ERRORS "将编译告警视为错误" ON)
+option(TINYKV_ENABLE_ASAN "启用 AddressSanitizer" OFF)
+option(TINYKV_ENABLE_UBSAN "启用 UndefinedBehaviorSanitizer" OFF)
+option(TINYKV_ENABLE_TSAN "启用 ThreadSanitizer" OFF)
+option(TINYKV_BUILD_INTEGRATION_TESTS "构建并运行端到端集成测试" ON)
+
+list(APPEND CMAKE_MODULE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
+)
+
+include(compiler_warnings)
+include(sanitizers)
+
 find_package(Threads REQUIRED)
 
 # 使用 C++ 17
@@ -26,13 +42,13 @@ add_library(tinykv_options INTERFACE)
 target_compile_features(tinykv_options INTERFACE cxx_std_17)
 if (MSVC)
     target_compile_options(tinykv_options INTERFACE /W4)
-else()
-    target_compile_options(tinykv_options INTERFACE
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
 endif()
+
+add_library(tinykv_warnings INTERFACE)
+tinykv_config_warnings(tinykv_warnings)
+
+add_library(tinykv_sanitizers INTERFACE)
+tinykv_configure_sanitizers(tinykv_sanitizers)
 
 # tinykv 核心库
 add_library(tinykv STATIC
@@ -50,6 +66,8 @@ target_include_directories(tinykv PUBLIC
 )
 target_link_libraries(tinykv PUBLIC 
     tinykv_options
+    tinykv_warnings
+    tinykv_sanitizers
     Threads::Threads
 )
 
@@ -71,12 +89,17 @@ target_link_libraries(tinykv_server PRIVATE
 if (TINYKV_BUILD_TESTS)
     enable_testing()
 
+    add_library(tinykv_test_options INTERFACE)
+    target_include_directories(tinykv_test_options INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+
     # 冒烟测试
     add_executable(test_smoke
         tests/test_smoke.cpp
     )
     target_link_libraries(test_smoke PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME smoke COMMAND test_smoke)
 
@@ -85,7 +108,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_frame_codec.cpp
     )
     target_link_libraries(test_frame_codec PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME frame_codec COMMAND test_frame_codec)
 
@@ -94,7 +117,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_command_parser.cpp
     )
     target_link_libraries(test_command_parser PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME command_parser COMMAND test_command_parser)
 
@@ -103,7 +126,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_kv_store.cpp
     )
     target_link_libraries(test_kv_store PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME kv_store COMMAND test_kv_store)
 
@@ -112,7 +135,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_scoped_fd.cpp
     )
     target_link_libraries(test_scoped_fd PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME scoped_fd COMMAND test_scoped_fd)
 
@@ -121,7 +144,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_socket_util.cpp
     )
     target_link_libraries(test_socket_util PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME socket_util COMMAND test_socket_util)
 
@@ -130,8 +153,45 @@ if (TINYKV_BUILD_TESTS)
     )
 
     target_link_libraries(test_command_executor PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
 
     add_test(NAME command_executor COMMAND test_command_executor)
+
+    set_tests_properties(
+        smoke
+        frame_codec
+        command_parser
+        command_executor
+        kv_store
+        scoped_fd
+        socket_util
+        PROPERTIES
+            LABELS "unit"
+            TIMEOUT 10
+    )
+endif()
+
+# 集成测试
+if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
+    find_package(Python3
+        COMPONENTS Interpreter
+        REQUIRED
+    )
+
+    add_test(
+        NAME server_e2e
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_server_e2e.py
+            --server
+            $<TARGET_FILE:tinykv_server>
+    )
+
+    set_tests_properties(
+        server_e2e
+        PROPERTIES
+            LABELS "integration"
+            TIMEOUT 20
+    )
 endif()
