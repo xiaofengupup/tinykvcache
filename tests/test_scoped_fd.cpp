@@ -201,5 +201,6 @@ int main()
     TestResetToNewFd();
     TestResetSameFdShouldNoLoop();
 
+    std::cout << "scoped fd tests passed\n";
     return 0;
 }
