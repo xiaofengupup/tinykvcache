@@ -5,17 +5,42 @@
 
 #include "tinykv/core/kv_store.h"
 #include "tinykv/net/scoped_fd.h"
+#include "tinykv/net/output_buffer.h"
 
 #include <string>
 #include <atomic>
 #include <unordered_map>
-
+#include <cstddef>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <algorithm>
+#include <array>
 
 namespace tinykv {
+
+struct TcpServerOptions {
+    // 单连接允许保留的最大未完成请求数据。
+    // 默认略大于 FrameCodec 的 1 MiB payload 上限。
+    std::size_t maxReadBufferBytes { 1024U * 1024U + 4U };
+
+    // 待发送数据达到高水位时暂停读取该客户端
+    std::size_t writeHighWatermarkBytes { 1024U * 1024U };
+
+    // 待发送数据下降到低水位时恢复读取。
+    std::size_t writeLowWatermarkBytes { 512U * 1024U };
+
+    // 单连接写缓冲区硬上限
+    // 超过该值说明客户端消费响应过慢，服务端会关闭该连接，防止内存无限增长。
+    std::size_t writeHardLimitBytes { 4U * 1024U * 1024U };
+
+    // 单次 POLLOUT 事件最多发送的字节数。
+    std::size_t maxWriteBytesPerEvent { 64U * 1024U };
+
+    // 一次 listen fd 可读事件最多接受的连接数。
+    std::size_t maxAcceptsPerEvent { 64 };
+};
 
 /**
  * 在第 9 阶段升级为 poll reactor 模型
@@ -23,7 +48,9 @@ namespace tinykv {
  */
 class TcpServer {
 public:
-    TcpServer(std::string host, int port, std::chrono::seconds sweepInterval = std::chrono::seconds(5));
+    TcpServer(std::string host, int port,
+        std::chrono::seconds sweepInterval = std::chrono::seconds(5),
+        TcpServerOptions options = TcpServerOptions{});
     ~TcpServer();
 
     // 禁止移动
@@ -48,9 +75,15 @@ private:
     struct Connection {
         explicit Connection(ScopedFd clientFd) : fd(std::move(clientFd)) {}
 
+        Connection(const Connection&) = delete;
+        Connection& operator=(const Connection&) = delete;
+        Connection(Connection&&) noexcept = default;
+        Connection& operator=(Connection&&) noexcept = default;
+
         ScopedFd fd;
         std::string readBuffer;         // 连接级读缓冲区，用于处理 TCP 半包和粘包
-        std::string writeBuffer;        // 连接级写缓冲区，用于处理非阻塞 send 未写完成的情况
+        OutputBuffer writeBuffer;       // 连接级写缓冲区，使用偏移式 OutputBuffer，避免频繁 erase。
+        bool readPaused{false};         // 因为待发送数据过多而暂停读取。
         bool closeAfterWrite {false};   // 表示当前响应完后关闭客户端连接，对应客户端 quit 命令
         bool closed {false};            // 表示连接已失效，需要从 m_clients 中移除
     };
@@ -60,6 +93,10 @@ private:
     void HandleClientRead(Connection &conn);
     
     void HandleClientWrite(Connection &conn);
+
+    bool QueueResponse(Connection &conn, const std::string &response);
+    void UpdateReadBackPressure(Connection &conn);
+    void RejectOversizedReadBuffer(Connection& conn);
     
     /**
      * 处理一条完整的 payload
@@ -68,8 +105,6 @@ private:
      * 返回 false：关闭当前客户端连接
      */
     bool ProcessPayload(Connection &conn, const std::string &payload);
-    
-    void AppendResponse(Connection& conn, const std::string& response);
     
     void MarkClosed(Connection& conn);
     
@@ -105,6 +140,9 @@ private:
     // 用于让 stop_sweeper_thread 能及时唤醒 sweeper_loop。
     std::mutex m_sweepMutex;
     std::condition_variable m_sweepCv;
+
+    // TCP Server 配置
+    TcpServerOptions m_options;
 };
 
 } // namespace tinyky

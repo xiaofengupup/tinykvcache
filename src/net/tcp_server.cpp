@@ -34,8 +34,29 @@ bool IsWouldBlockError()
 
 }
 
-TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval)
-    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval) {}
+TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval, TcpServerOptions options)
+    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval), m_options(options)
+{
+    if (m_options.maxReadBufferBytes < 4U) {
+        throw std::invalid_argument("maxReadBufferBytes must be at least 4");
+    }
+
+    if (m_options.writeLowWatermarkBytes > m_options.writeHighWatermarkBytes) {
+        throw std::invalid_argument("write low watermark exceeds high watermark");
+    }
+
+    if (m_options.writeHighWatermarkBytes > m_options.writeHardLimitBytes) {
+        throw std::invalid_argument("write high watermark exceeds hard limit");
+    }
+
+    if (m_options.maxWriteBytesPerEvent == 0U) {
+        throw std::invalid_argument("maxWriteBytesPerEvent must be greater than zero");
+    }
+
+    if (m_options.maxAcceptsPerEvent == 0U) {
+        throw std::invalid_argument("maxAcceptsPerEvent must be greater than zero");
+    }
+}
 
 TcpServer::~TcpServer()
 {
@@ -71,16 +92,29 @@ void TcpServer::Run()
                     continue;
                 }
 
+                UpdateReadBackPressure(conn);
+                if (conn.closeAfterWrite && conn.writeBuffer.Empty()) {
+                    MarkClosed(conn);
+                    continue;
+                }
+
                 pollfd clientPoll;
                 clientPoll.fd = conn.fd.Get();
-                clientPoll.events = POLLIN;
+                clientPoll.events = 0;
                 clientPoll.revents = 0;
-                if (!conn.writeBuffer.empty()) {
+
+                // 当写缓冲区超过高水位，或者收到 QUIT 后，暂停继续读取该连接。
+                if (!conn.readPaused && !conn.closeAfterWrite) {
+                    clientPoll.events |= POLLIN;
+                }
+                if (!conn.writeBuffer.Empty()) {
                     // 只有当 write_buffer 非空时，才关注 POLLOUT。
                     // 否则大多数 socket 都会一直可写，导致 poll 频繁返回，浪费 CPU。
                     clientPoll.events |= POLLOUT;
                 }
-
+                if (clientPoll.events == 0) {
+                    continue;
+                }
                 pollFds.push_back(clientPoll);
             }
 
@@ -177,7 +211,9 @@ void TcpServer::AcceptNewClients()
 {
     // 这里采用循环的原因是：
     // 一次 poll() 通知 listen fd 可读时，可能已经有多个客户端在连接队列中，所以要一直 accept()
-    while (true) {
+
+    std::size_t acceptedCount = 0;
+    while (acceptedCount < m_options.maxAcceptsPerEvent) {
         const int clientFd = ::accept(m_listenFd.Get(), nullptr, nullptr);
         if (clientFd < 0) {
             if (errno == EINTR) {
@@ -202,105 +238,164 @@ void TcpServer::AcceptNewClients()
         if (!result.second) {
             throw std::runtime_error("client fd already exists");
         }
+        ++acceptedCount;
         std::cout << "client connected, fd=" << rawFd << "\n";
     }
 }
 
 void TcpServer::HandleClientRead(Connection &conn)
 {
-    char temp[4096];
-    while (m_running) {
-        const ssize_t n = ::recv(conn.fd.Get(), &temp, sizeof(temp), 0);
-        if (n > 0) {
-            std::vector<std::string> payloads;
-            try {
-                payloads = FrameCodec::Decode(conn.readBuffer, temp, static_cast<std::size_t>(n));
-            } catch (const std::exception&) {
-                AppendResponse(conn, "-ERR protocol error");
-                conn.closeAfterWrite = true;
-                return;
-            }
+    if (conn.closed || conn.readPaused || conn.closeAfterWrite) {
+        return;
+    }
 
-            for (const auto &payload : payloads) {
-                const bool keepAlive = ProcessPayload(conn, payload);
-                if (!keepAlive) {
-                    conn.closeAfterWrite = true;
-                    return;
-                }
-            }
+    if (conn.readBuffer.size() >= m_options.maxReadBufferBytes) {
+        RejectOversizedReadBuffer(conn);
+        return;
+    }
 
-            continue;
-        }
+    std::array<char, 16U * 1024U> temp{};
+    const std::size_t availableBytes = m_options.maxReadBufferBytes - conn.readBuffer.size();
+    const std::size_t readSize = std::min(temp.size(), availableBytes);
 
-        if (n == 0) {
-            // 对端关闭连接。
-            MarkClosed(conn);
-            return;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
+    // 这里只执行一次 recv，是因为当前使用的是level-triggered poll：
+    // socket 内核缓冲区仍然有数据 -> 下一个 poll 仍会报告 POLLIN -> 其他连接也获得一次处理机会
+    ssize_t received = -1;
+    do {
+        received = ::recv(conn.fd.Get(), temp.data(), readSize, 0);
+    } while (received < 0 && errno == EINTR);
+
+    if (received == 0) {
+        MarkClosed(conn);
+        return;
+    }
+    if (received < 0) {
         if (IsWouldBlockError()) {
             return;
         }
 
         MarkClosed(conn);
         return;
+    }
+
+    std::vector<std::string> payloads;
+    try {
+        payloads = FrameCodec::Decode(conn.readBuffer, temp.data(), static_cast<std::size_t>(received));
+    } catch (const std::exception&) {
+        if (QueueResponse(conn, "-ERR protocol error")) {
+            conn.closeAfterWrite = true;
+        }
+        return;
+    }
+
+    for (const auto &payload : payloads) {
+        if (!ProcessPayload(conn, payload)) {
+            return;
+        }
     }
 }
 
 void TcpServer::HandleClientWrite(Connection &conn)
 {
-    while (!conn.writeBuffer.empty()) {
-        const ssize_t n = ::send(conn.fd.Get(), conn.writeBuffer.data(), conn.writeBuffer.size(), 0);
-        if (n > 0) {
-            conn.writeBuffer.erase(0, static_cast<std::size_t>(n));
-            continue;
+    if (conn.closed) {
+        return;
+    }
+
+    if (conn.writeBuffer.Empty()) {
+        UpdateReadBackPressure(conn);
+        if (conn.closeAfterWrite) {
+            MarkClosed(conn);
         }
 
-        if (n == 0) {
-            return;
-        }
-        
-        if (errno == EINTR) {
-            continue;
-        }
-        if (IsWouldBlockError()) {
-            return;
-        }
+        return;
+    }
 
+    const std::size_t bytesToWrite = std::min(conn.writeBuffer.Size(), m_options.maxWriteBytesPerEvent);
+    
+    ssize_t written = -1;
+    do {
+        written = ::send(conn.fd.Get(), conn.writeBuffer.Data(), bytesToWrite, 0);
+    } while (written < 0 && errno == EINTR);
+    
+    if (written > 0) {
+        conn.writeBuffer.Consume(static_cast<std::size_t>(written));
+        UpdateReadBackPressure(conn);
+
+        if (conn.writeBuffer.Empty() && conn.closeAfterWrite) {
+            MarkClosed(conn);
+        }
+        return;
+    }
+
+    if (written == 0) {
         MarkClosed(conn);
         return;
     }
 
-    if (conn.writeBuffer.empty() && conn.closeAfterWrite) {
-        MarkClosed(conn);
+    if (IsWouldBlockError()) {
+        return;
     }
+
+    MarkClosed(conn);
 }
 
 bool TcpServer::ProcessPayload(Connection &conn, const std::string &payload)
 {
     const Command cmd = ParseCommand(payload);
     const std::string response = CommandExecutor::Execute(m_store, cmd);
-    AppendResponse(conn, response);
 
-    return cmd.type != CommandType::Quit; // QUIT 只关闭当前客户端连接，不关闭整个服务端。
+    if (!QueueResponse(conn, response)) {
+        return false;
+    }
+
+    if (cmd.type == CommandType::Quit) {
+        conn.closeAfterWrite = true; // 先把 +BYE 写完，再关闭连接。
+        return false;
+    }
+
+    return true;
 }
 
-void TcpServer::AppendResponse(Connection& conn, const std::string& response)
+bool TcpServer::QueueResponse(Connection& conn, const std::string& response)
 {
-    const std::string frame = FrameCodec::Encode(response);
-    conn.writeBuffer += frame;
+    std::string frame;
+    try {
+        frame = FrameCodec::Encode(response);
+    } catch (const std::exception&) {
+        MarkClosed(conn);
+        return false;
+    }
+
+    const std::size_t pendingBytes = conn.writeBuffer.Size();
+    const std::size_t hardLimit = m_options.writeHardLimitBytes;
+
+    if (pendingBytes > hardLimit || frame.size() > hardLimit - pendingBytes) {
+        std::cerr << "close slow client, fd="
+            << conn.fd.Get()
+            << ", pending_bytes="
+            << pendingBytes
+            << ", new_frame_bytes="
+            << frame.size()
+            << '\n';
+
+        MarkClosed(conn);
+        return false;
+    }
+
+    conn.writeBuffer.Append(frame);
+    UpdateReadBackPressure(conn);
+    return true;
 }
 
 void TcpServer::MarkClosed(Connection& conn)
 {
     conn.closed = true;
+    conn.readPaused = false;
     conn.closeAfterWrite = false;
 
     // 连接已经关闭或异常时，未发送数据不再保留。
     conn.readBuffer.clear();
-    conn.writeBuffer.clear();
+    conn.writeBuffer.Clear();
 }
 
 void TcpServer::CleanupClosedConnections()
@@ -365,6 +460,35 @@ void TcpServer::SweeperLoop()
         }
         
         lock.lock();
+    }
+}
+
+void TcpServer::UpdateReadBackPressure(Connection& conn)
+{
+    if (conn.closeAfterWrite || conn.closed) {
+        return;
+    }
+
+    const std::size_t pendingBytes = conn.writeBuffer.Size();
+
+    if (conn.readPaused) {
+        if (pendingBytes <= m_options.writeLowWatermarkBytes) {
+            conn.readPaused = false;
+        }
+        return;
+    }
+
+    if (pendingBytes >= m_options.writeHighWatermarkBytes) {
+        conn.readPaused = true;
+    }
+}
+
+void TcpServer::RejectOversizedReadBuffer(Connection& conn)
+{
+    if (QueueResponse(conn, "-ERR request buffer too large")) {
+        conn.closeAfterWrite = true;
+    } else {
+        MarkClosed(conn);
     }
 }
 
