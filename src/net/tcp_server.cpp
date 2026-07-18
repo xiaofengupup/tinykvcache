@@ -80,7 +80,7 @@ void TcpServer::Run()
             for (const ReadyEvent& ready : readyEvents) {
                 // 处理 m_listenFd 相关事件
                 if (ready.fd == m_listenFd.Get()) {
-                    if (HasIoEvent(ready.events, IoEvent::Error) || HasIoEvent(readyEvents, IoEvent::Hangup)) {
+                    if (HasIoEvent(ready.events, IoEvent::Error) || HasIoEvent(ready.events, IoEvent::Hangup)) {
                         throw std::runtime_error("listen socket failed");
                     }
 
@@ -110,6 +110,9 @@ void TcpServer::Run()
                 }
                 if (!conn.closed && HasIoEvent(ready.events, IoEvent::Hangup)) {
                     MarkClosed(conn);
+                }
+                if (!conn.closed) {
+                    RefreshConnectionInterest(conn);
                 }
             }
             CleanupClosedConnections();
@@ -346,7 +349,7 @@ void TcpServer::CleanupClosedConnections()
         const int fd = it->first;
         m_poller->Remove(fd);
         std::cout << "client disconnected, fd=" << fd << "\n";
-        iter = m_clients.erase(iter);
+        it = m_clients.erase(it);
     }
 }
 
