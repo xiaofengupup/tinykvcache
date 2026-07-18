@@ -6,6 +6,9 @@
 #include "tinykv/core/kv_store.h"
 #include "tinykv/net/scoped_fd.h"
 #include "tinykv/net/output_buffer.h"
+#include "tinykv/net/poll/io_event.h"
+#include "tinykv/net/poll/poller.h"
+#include "tinykv/net/poll/poller_factory.h"
 
 #include <string>
 #include <atomic>
@@ -17,6 +20,7 @@
 #include <thread>
 #include <algorithm>
 #include <array>
+#include <memory>
 
 namespace tinykv {
 
@@ -40,6 +44,9 @@ struct TcpServerOptions {
 
     // 一次 listen fd 可读事件最多接受的连接数。
     std::size_t maxAcceptsPerEvent { 64 };
+
+    // // Auto：Linux 使用 epoll，macOS 使用 poll。
+    PollerBackend pollerBackend { PollerBackend::Auto };
 };
 
 /**
@@ -86,17 +93,19 @@ private:
         bool readPaused{false};         // 因为待发送数据过多而暂停读取。
         bool closeAfterWrite {false};   // 表示当前响应完后关闭客户端连接，对应客户端 quit 命令
         bool closed {false};            // 表示连接已失效，需要从 m_clients 中移除
+        IoEvent registeredEvents {IoEvent::None}; // 当前已经注册到 poller 的关注事件，用于避免不必要的 Modify 调用
     };
+
 private:
     void AcceptNewClients();
-
     void HandleClientRead(Connection &conn);
-    
     void HandleClientWrite(Connection &conn);
-
     bool QueueResponse(Connection &conn, const std::string &response);
     void UpdateReadBackPressure(Connection &conn);
     void RejectOversizedReadBuffer(Connection& conn);
+    IoEvent DesiredEvents(const Connection& conn) const noexcept;
+    void RefreshConnectionInterest(Connection& conn);
+    void CleanupReactor() noexcept;
     
     /**
      * 处理一条完整的 payload
@@ -143,6 +152,9 @@ private:
 
     // TCP Server 配置
     TcpServerOptions m_options;
+
+    // Poller
+    std::unique_ptr<Poller> m_poller;
 };
 
 } // namespace tinyky
