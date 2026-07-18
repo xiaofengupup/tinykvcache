@@ -72,11 +72,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/net/poll/epoll_poller.cpp
     )
     target_compile_definitions(tinykv PUBLIC
-        TINYKV_HAS_EPOLL = 1
+        TINYKV_HAS_EPOLL=1
     )
 else()
     target_compile_definitions(tinykv PUBLIC
-        TINYKV_HAS_EPOLL = 0
+        TINYKV_HAS_EPOLL=0
     )
 endif()
 

@@ -67,7 +67,7 @@ std::vector<ReadyEvent> PollPoller::Wait(std::chrono::milliseconds timeout)
 
     do {
         result = ::poll(pollFds.empty() ? nullptr : pollFds.data(), descriptorCount, ToTimeoutMilliseconds(timeout));
-    } while (result < 0 && errno = EINTR);
+    } while (result < 0 && errno == EINTR);
 
     if (result < 0) {
         throw std::runtime_error(ErrorMessage("Poll failed"));
