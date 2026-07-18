@@ -185,6 +185,15 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME output_buffer COMMAND test_output_buffer)
 
+    # 测试 Poller
+    add_executable(test_poller
+        tests/test_poller.cpp
+    )
+    target_link_libraries(test_poller PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME poller COMMAND test_poller)
+
     set_tests_properties(
         smoke
         frame_codec
@@ -194,6 +203,7 @@ if (TINYKV_BUILD_TESTS)
         scoped_fd
         socket_util
         output_buffer
+        poller
         PROPERTIES
             LABELS "unit"
             TIMEOUT 10
