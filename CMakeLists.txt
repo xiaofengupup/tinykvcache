@@ -61,7 +61,25 @@ add_library(tinykv STATIC
     src/net/socket_util.cpp
     src/net/tcp_server.cpp
     src/net/output_buffer.cpp
+
+    src/net/poll/poller_factory.cpp
+    src/net/poll/poller_common.cpp
+    src/net/poll/poll_poller.cpp
 )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(tinykv PRIVATE
+        src/net/poll/epoll_poller.cpp
+    )
+    target_compile_definitions(tinykv PUBLIC
+        TINYKV_HAS_EPOLL = 1
+    )
+else()
+    target_compile_definitions(tinykv PUBLIC
+        TINYKV_HAS_EPOLL = 0
+    )
+endif()
+
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
