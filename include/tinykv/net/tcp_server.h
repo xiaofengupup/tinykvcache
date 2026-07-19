@@ -9,6 +9,7 @@
 #include "tinykv/net/poll/io_event.h"
 #include "tinykv/net/poll/poller.h"
 #include "tinykv/net/poll/poller_factory.h"
+#include "tinykv/net/wakeup/wakeup_channel.h"
 
 #include <string>
 #include <atomic>
@@ -45,8 +46,19 @@ struct TcpServerOptions {
     // 一次 listen fd 可读事件最多接受的连接数。
     std::size_t maxAcceptsPerEvent { 64 };
 
-    // // Auto：Linux 使用 epoll，macOS 使用 poll。
+    // Auto：Linux 使用 epoll，macOS 使用 poll。
     PollerBackend pollerBackend { PollerBackend::Auto };
+
+    // 收到退出请求后，允许现有的写缓冲区排空的最长时间
+    std::chrono::milliseconds gracefulShutdownTimeout { std::chrono::milliseconds(3000)};
+};
+
+// TcpServer 运行状态
+enum class ServerState {
+    Created,
+    Running,
+    Draining,
+    Stopped
 };
 
 /**
@@ -72,11 +84,14 @@ public:
     void Run();
 
     /**
-     * 停止服务端
-     * 
-     * 当前阶段主要作为接口预留，后续配合信号处理或多线程使用。
+     * 停止服务端，可以从其他普通线程调用
      */
     void Stop();
+
+    /**
+     * 返回供信号处理器写入的 fd
+     */
+    int StopNotificationFd() const noexcept;
 
 private:
     struct Connection {
@@ -105,6 +120,11 @@ private:
     void RejectOversizedReadBuffer(Connection& conn);
     IoEvent DesiredEvents(const Connection& conn) const noexcept;
     void RefreshConnectionInterest(Connection& conn);
+
+    void BeginGracefulShutdown();
+    void CheckShutdownProgress();
+    void ForceCloseAllConnections();
+    std::chrono::milliseconds ComputeWaitTimeout() const;
     void CleanupReactor() noexcept;
     
     /**
@@ -155,6 +175,12 @@ private:
 
     // Poller
     std::unique_ptr<Poller> m_poller;
+
+    // wakeup handler
+    std::atomic_bool m_stopRequested {false};
+    ServerState m_state {ServerState::Created};
+    WakeupChannel m_stopWakup;
+    std::chrono::steady_clock::time_point m_shutdownDeadline {};
 };
 
 } // namespace tinyky

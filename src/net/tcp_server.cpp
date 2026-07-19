@@ -65,29 +65,46 @@ TcpServer::~TcpServer()
 
 void TcpServer::Run()
 {
+    if (m_state != ServerState::Created) {
+        throw std::logic_error("TcpServer can only run once!");
+    }
+
     m_poller = CreatePoller(m_options.pollerBackend);
     m_listenFd = CreateListenSocket(m_host, m_port);
     SetNonBlocking(m_listenFd.Get());
     m_poller->Add(m_listenFd.Get(), IoEvent::Read);
+    m_poller->Add(m_stopWakup.ReadFd(), IoEvent::Read);
 
+    m_state = ServerState::Running;
     m_running = true;
     StartSweeperThread();
     std::cout << "server listening on " << m_host << ":" << m_port << ", poller=" << m_poller->Name() << "\n";
 
     try {
-        while (m_running) {
-            const std::vector<ReadyEvent> readyEvents = m_poller->Wait(std::chrono::seconds(1000));
+        while (m_state != ServerState::Stopped)
+            const std::vector<ReadyEvent> readyEvents = m_poller->Wait(ComputeWaitTimeout());
+            bool stopEventReceived = m_stopRequested.load(std::memory_order_acquire);
+            
+            // 先处理停止通知，避免同一批事件中继续 accept 新连接
             for (const ReadyEvent& ready : readyEvents) {
-                // 处理 m_listenFd 相关事件
-                if (ready.fd == m_listenFd.Get()) {
-                    if (HasIoEvent(ready.events, IoEvent::Error) || HasIoEvent(ready.events, IoEvent::Hangup)) {
-                        throw std::runtime_error("listen socket failed");
-                    }
+                if (ready.fd == m_stopWakup.ReadFd()) {
+                    m_stopWakup.Drain();
+                    stopEventReceived = true;
+                }
+            }
+            if (stopEventReceived) {
+                BeginGracefulShutdown();
+            }
 
-                    if (HasIoEvent(ready.events, IoEvent::Read)) {
+            for (const ReadyEvent& ready : readyEvents) {
+                if (ready.fd == m_stopWakup.ReadFd()) {
+                    continue;
+                }
+                // 处理 m_listenFd 相关事件
+                if (m_listenFd.Valid() && ready.fd == m_listenFd.Get()) {
+                    if (m_state == ServerState::Running && HasIoEvent(ready.events, IoEvent::Read)) {
                         AcceptNewClients();
                     }
-
                     continue;
                 }
 
@@ -102,7 +119,8 @@ void TcpServer::Run()
                     MarkClosed(conn);
                     continue;
                 }
-                if (HasIoEvent(ready.events, IoEvent::Read)) {
+                // Draining 状态下不再读取新请求
+                if (m_state == ServerState::Draining && HasIoEvent(ready.events, IoEvent::Read)) {
                     HandleClientRead(conn);
                 }
                 if (!conn.closed && HasIoEvent(ready.events, IoEvent::Write)) {
@@ -116,11 +134,13 @@ void TcpServer::Run()
                 }
             }
             CleanupClosedConnections();
+            CheckShutdownProgress();
         }
     } catch (const std::exception&) {
         m_running = false;
         StopSweeperThread();
         CleanupReactor();
+        m_state = ServerState::Stopped;
         throw;
     }
 
@@ -128,12 +148,105 @@ void TcpServer::Run()
     m_running = false;
     StopSweeperThread();
     CleanupReactor();
+    m_state = ServerState::Stopped;
+
+    std::cout << "server stopped gracefully" << '\n';
 }
 
+/**
+ * 只做通知动作，真正的状态修改全部由事件循环线程完成
+ */
 void TcpServer::Stop()
 {
-    m_running = false;
-    StopSweeperThread();
+    m_stopRequested.store(true, std::memory_order_release);
+    m_stopWakup.Notify();
+}
+
+int TcpServer::StopNotificationFd()
+{
+    return m_stopWakup.WriteFd();
+}
+
+void TcpServer::BeginGracefulShutdown()
+{
+    if (m_state != ServerState::Running) {
+        return;
+    }
+
+    m_state = ServerState::Draining;
+    m_shutdownDeadline = std::chrono::steady_clock::now() + m_options.gracefulShutdownTimeout;
+
+    std::cout << "graceful shutdown started" << std::endl;
+    
+    // 停止接受新连接
+    if (m_listenFd.Valid()) {
+        m_poller->Remove(m_listenFd.Get());
+        m_listenFd.Reset();
+    }
+
+    // 不再读取已有连接的新请求，但允许已经排队的响应继续发送
+    for (auto &item : m_clients) {
+        Connection &conn = item.second;
+        conn.readPaused = true;
+        conn.closeAfterWrite = true;
+        if (conn.writeBuffer.Empty()) {
+            MarkClosed(conn);
+            continue;
+        }
+
+        RefreshConnectionInterest(conn);
+    }
+
+    CleanupClosedConnections();
+    if (m_clients.empty()) {
+        m_state = ServerState::Stopped;
+    }
+}
+
+void TcpServer::CheckShutdownProgress()
+{
+    if (m_state != ServerState::Draining) {
+        return;
+    }
+
+    if (m_clients.empty()) {
+        m_state = ServerState::Stopped;
+        return;
+    }
+
+    if (std::chrono::steady_clock::now() >= m_shutdownDeadline) {
+        ForceCloseAllConnections();
+        m_state = ServerState::Stopped;
+    }
+}
+
+void TcpServer::ForceCloseAllConnections()
+{
+    std::cerr << "graceful shutdown timed out, force closing " << m_clients.size() << " client(s)" << std::endl;
+    for (auto& item : m_clients) {
+        MarkClosed(item.second);
+    }
+
+    CleanupClosedConnections();
+}
+
+std::chrono::milliseconds TcpServer::ComputeWaitTimeout() const
+{
+    if (m_state != ServerState::Running) {
+        // WakeupChannel 可以主动唤醒，因此正常运行时可以无限等待
+        return std::chrono::milliseconds(-1);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= m_shutdownDeadline) {
+        return std::chrono::milliseconds(0);
+    }
+
+    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(m_shutdownDeadline - now);
+    if (remaining.count() == 0) {
+        remaining = std::chrono::milliseconds(1);
+    }
+    return remaining;
 }
 
 void TcpServer::AcceptNewClients()
@@ -415,6 +528,12 @@ void TcpServer::CleanupReactor() noexcept
             } catch (const std::exception& error) {
                 std::cerr << "failed to remove listen fd: " << error.what() << "\n"; 
             }
+        }
+
+        try {
+            m_poller->Remove(m_stopWakeup.ReadFd());
+        } catch (const std::exception& error) {
+            std::cerr << "failed to remove wakeup fd: " << error.what() << '\n';
         }
     }
 

@@ -65,6 +65,9 @@ add_library(tinykv STATIC
     src/net/poll/poller_factory.cpp
     src/net/poll/poller_common.cpp
     src/net/poll/poll_poller.cpp
+
+    src/net/wakeup/wakeup_channel.cpp
+    src/net/wakeup/termination_signal_handler.cpp
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -194,6 +197,15 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME poller COMMAND test_poller)
 
+    # 测试 wakeup channel
+    add_executable(test_wakeup_channel
+        tests/test_wakeup_channel.cpp
+    )
+    target_link_libraries(test_wakeup_channel PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME wakeup_channel COMMAND test_wakeup_channel)
+
     set_tests_properties(
         smoke
         frame_codec
@@ -204,6 +216,7 @@ if (TINYKV_BUILD_TESTS)
         socket_util
         output_buffer
         poller
+        wakeup_channel
         PROPERTIES
             LABELS "unit"
             TIMEOUT 10
@@ -225,11 +238,48 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
             --server
             $<TARGET_FILE:tinykv_server>
     )
-
     set_tests_properties(
         server_e2e
         PROPERTIES
             LABELS "integration"
             TIMEOUT 20
     )
+
+    add_test(
+        NAME graceful_shutdown
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
+            --server
+            $<TARGET_FILE:tinykv_server>
+            --backend
+            auto
+    )
+
+    set_tests_properties(
+        graceful_shutdown
+        PROPERTIES
+            LABELS "integration"
+            TIMEOUT 15
+    )
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(
+            NAME graceful_shutdown_epoll
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
+                --server
+                $<TARGET_FILE:tinykv_server>
+                --backend
+                epoll
+        )
+
+        set_tests_properties(
+            graceful_shutdown_epoll
+            PROPERTIES
+                LABELS "integration"
+                TIMEOUT 15
+        )
+    endif()
 endif()

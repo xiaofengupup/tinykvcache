@@ -1,4 +1,5 @@
 #include "tinykv/net/tcp_server.h"
+#include "tinykv/net/wakeup/termination_signal_handler.h"
 
 #include <iostream>
 #include <exception>
@@ -20,7 +21,10 @@ int main(int argc, char *argv[])
             options.pollerBackend = tinykv::ParsePollerBackend(argv[3]);
         }
         
+        // signalHandler 必须在 server 之后构造。
+        // 局部对象逆序析构，因此会先恢复信号处理器，再销毁 TcpServer 和 WakeupChannel。
         tinykv::TcpServer server(host, port, std::chrono::seconds(5), options);
+        tinykv::TerminationSignalHandler signals(server.StopNotificationFd());
         server.Run(); 
     } catch (const std::exception &e) {
         std::cerr << "error: " << e.what() << "\n";
