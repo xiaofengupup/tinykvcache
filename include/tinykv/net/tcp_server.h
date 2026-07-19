@@ -157,7 +157,6 @@ private:
 private:
     std::string m_host;
     int m_port {0};
-    std::atomic_bool m_running {false};
     ScopedFd m_listenFd;
     KVStore  m_store;
     std::unordered_map<int, Connection> m_clients; // key 是 client fd，value 是该连接的状态。

@@ -76,7 +76,6 @@ void TcpServer::Run()
     m_poller->Add(m_stopWakup.ReadFd(), IoEvent::Read);
 
     m_state = ServerState::Running;
-    m_running = true;
     StartSweeperThread();
     std::cout << "server listening on " << m_host << ":" << m_port << ", poller=" << m_poller->Name() << "\n";
 
@@ -137,15 +136,12 @@ void TcpServer::Run()
             CheckShutdownProgress();
         }
     } catch (const std::exception&) {
-        m_running = false;
         StopSweeperThread();
         CleanupReactor();
         m_state = ServerState::Stopped;
         throw;
     }
 
-
-    m_running = false;
     StopSweeperThread();
     CleanupReactor();
     m_state = ServerState::Stopped;
