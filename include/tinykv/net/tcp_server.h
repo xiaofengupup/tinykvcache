@@ -50,7 +50,7 @@ struct TcpServerOptions {
     PollerBackend pollerBackend { PollerBackend::Auto };
 
     // 收到退出请求后，允许现有的写缓冲区排空的最长时间
-    std::chrono::milliseconds gracefulShutdownTimeout { std::chrono::milliseconds(3000)};
+    std::chrono::milliseconds gracefulShutdownTimeout { std::chrono::milliseconds(3000) };
 };
 
 // TcpServer 运行状态

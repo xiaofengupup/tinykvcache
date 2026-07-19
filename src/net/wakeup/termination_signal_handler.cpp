@@ -35,32 +35,34 @@ void HandleTerminationSignal(int signalNumber) noexcept
     errno = savedErrno;
 }
 
-sigaction MakeTerminationAction()
+struct sigaction MakeTerminationAction()
 {
-    sigaction action {};
+    struct sigaction action {};
     action.sa_handler = HandleTerminationSignal;
     action.sa_flags = 0;
 
     // 将 sa_mask（信号掩码）初始化为空集
     // 信号掩码的作用：在执行信号处理函数期间，sa_mask 中指定的信号会被阻塞。
-    if (::sigemptyset(&action.sa_mask) < 0) {
+    if (sigemptyset(&action.sa_mask) < 0) {
         throw std::runtime_error(ErrnoMessage("sigemptyset failed"));
     }
 
     return action;
 }
 
-sigaction MakeIgnoreAction()
+struct sigaction MakeIgnoreAction()
 {
-    sigaction action {};
+    struct sigaction action {};
     action.sa_handler = SIG_IGN;
     action.sa_flags = 0;
 
-    if (::sigemptyset(&action.sa_mask) < 0) {
+    if (sigemptyset(&action.sa_mask) < 0) {
         throw std::runtime_error(ErrnoMessage("sigemptyset failed"));
     }
 
     return action;
+}
+
 }
 
 TerminationSignalHandler::TerminationSignalHandler(int notifyFd)
@@ -74,8 +76,8 @@ TerminationSignalHandler::TerminationSignalHandler(int notifyFd)
     }
 
     G_NOTIFY_FD = static_cast<sig_atomic_t>(notifyFd);
-    const sigaction terminationAction = MakeTerminationAction();
-    const sigaction ignoreAction = MakeIgnoreAction();
+    const struct sigaction terminationAction = MakeTerminationAction();
+    const struct sigaction ignoreAction = MakeIgnoreAction();
 
     // int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
     if (::sigaction(SIGINT, &terminationAction, &m_previousSigint) < 0) {
@@ -112,8 +114,6 @@ TerminationSignalHandler::~TerminationSignalHandler()
     (void)::sigaction(SIGPIPE, &m_previousSigpipe, nullptr);
 
     G_NOTIFY_FD = -1;
-}
-
 }
 
 } // namespace tinykv

@@ -3,7 +3,7 @@
  */
 #pragma once
 
-#include <signal.h>
+#include <csignal>
 
 namespace tinykv {
 
@@ -23,9 +23,9 @@ public:
 private:
     bool m_installed { false };
 
-    sigaction m_previousSigint {};
-    sigaction m_previousSigterm {};
-    sigaction m_previousSigpipe {};
+    struct sigaction m_previousSigint {};
+    struct sigaction m_previousSigterm {};
+    struct sigaction m_previousSigpipe {};
 };
 
 } // namespace tinykv

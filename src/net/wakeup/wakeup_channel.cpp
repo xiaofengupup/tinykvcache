@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <array>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace tinykv {
 
@@ -40,7 +41,7 @@ WakeupChannel::WakeupChannel()
     // socketpair() 会返回一对已经互相连接的 socket，适合用作进程内部通知通道；
     // 这一机制可以同时被 poll 和 epoll 监听
     int rawFds[2] = {-1, -1};
-    if (::scoketpair(AF_UNIX, SOCK_STREAM, 0, rawFds) < 0) {
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, rawFds) < 0) {
         throw std::runtime_error(ErrnoMessage("socketpair failed"));
     }
 

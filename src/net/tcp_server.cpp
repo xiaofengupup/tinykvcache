@@ -81,7 +81,7 @@ void TcpServer::Run()
     std::cout << "server listening on " << m_host << ":" << m_port << ", poller=" << m_poller->Name() << "\n";
 
     try {
-        while (m_state != ServerState::Stopped)
+        while (m_state != ServerState::Stopped) {
             const std::vector<ReadyEvent> readyEvents = m_poller->Wait(ComputeWaitTimeout());
             bool stopEventReceived = m_stopRequested.load(std::memory_order_acquire);
             
@@ -120,7 +120,7 @@ void TcpServer::Run()
                     continue;
                 }
                 // Draining 状态下不再读取新请求
-                if (m_state == ServerState::Draining && HasIoEvent(ready.events, IoEvent::Read)) {
+                if (m_state == ServerState::Running && HasIoEvent(ready.events, IoEvent::Read)) {
                     HandleClientRead(conn);
                 }
                 if (!conn.closed && HasIoEvent(ready.events, IoEvent::Write)) {
@@ -162,7 +162,7 @@ void TcpServer::Stop()
     m_stopWakup.Notify();
 }
 
-int TcpServer::StopNotificationFd()
+int TcpServer::StopNotificationFd() const noexcept
 {
     return m_stopWakup.WriteFd();
 }
@@ -531,7 +531,7 @@ void TcpServer::CleanupReactor() noexcept
         }
 
         try {
-            m_poller->Remove(m_stopWakeup.ReadFd());
+            m_poller->Remove(m_stopWakup.ReadFd());
         } catch (const std::exception& error) {
             std::cerr << "failed to remove wakeup fd: " << error.what() << '\n';
         }
