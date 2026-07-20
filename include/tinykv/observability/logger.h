@@ -40,16 +40,16 @@ public:
     void SetLevel(LogLevel level) noexcept;
     
     template<typename... Args>
-    void Debug(Args&&... args) { Log(LogLevel::Debug, std::forward<Args>(args)); }
+    void Debug(Args&&... args) { Log(LogLevel::Debug, std::forward<Args>(args)...); }
 
     template<typename... Args>
-    void Info(Args&&... args) { Log(LogLevel::Info, std::forward<Args>(args)); }
+    void Info(Args&&... args) { Log(LogLevel::Info, std::forward<Args>(args)...); }
 
     template<typename... Args>
-    void Warn(Args&&... args) { Log(LogLevel::Warn, std::forward<Args>(args)); }
+    void Warn(Args&&... args) { Log(LogLevel::Warn, std::forward<Args>(args)...); }
 
     template<typename... Args>
-    void Error(Args&&... args) { Log(LogLevel::Error, std::forward<Args>(args)); }
+    void Error(Args&&... args) { Log(LogLevel::Error, std::forward<Args>(args)...); }
 
 private:
     Logger() = default;

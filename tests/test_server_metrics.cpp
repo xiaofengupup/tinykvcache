@@ -81,5 +81,6 @@ int main()
     TestLatencyMetrics();
     TestMaximumPendingBytes();
 
+    std::cout << "server metrics test passed" << std::endl;
     return 0;
 }
