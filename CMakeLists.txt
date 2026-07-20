@@ -68,6 +68,9 @@ add_library(tinykv STATIC
 
     src/net/wakeup/wakeup_channel.cpp
     src/net/wakeup/termination_signal_handler.cpp
+
+    src/observability/logger.cpp
+    src/observability/server_metrics.cpp
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -206,6 +209,16 @@ if (TINYKV_BUILD_TESTS)
     )
     add_test(NAME wakeup_channel COMMAND test_wakeup_channel)
 
+    # 测试 server_metrics
+    add_executable(test_server_metrics
+        tests/test_server_metrics.cpp
+    )
+    target_link_libraries(test_server_metrics PRIVATE
+        tinykv
+        tinykv_test_options
+    )
+    add_test(NAME server_metrics COMMAND test_server_metrics)
+
     set_tests_properties(
         smoke
         frame_codec
@@ -217,6 +230,7 @@ if (TINYKV_BUILD_TESTS)
         output_buffer
         poller
         wakeup_channel
+        server_metrics
         PROPERTIES
             LABELS "unit"
             TIMEOUT 10
