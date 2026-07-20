@@ -1,95 +1,295 @@
 # TinyKVCache
 
-TinyKVCache 是一个使用 **C++17** 从零实现的轻量级 TCP 内存 KV 缓存服务。项目以 C++ 后端面试和网络编程训练为目标，覆盖了从应用层协议设计、命令解析、内存存储、RAII 资源管理，到非阻塞 socket、`poll` Reactor、多客户端连接管理、TTL 后台清理、Linux 部署和简单压测的完整链路。
+TinyKVCache 是一个使用 **C++17** 从零实现的轻量级 TCP 内存 KV 缓存服务。
 
-本项目不是简单的 Echo Server，而是一个具备完整请求-响应协议、业务命令、连接状态管理和工程化脚本的小型 C++ 网络服务。
+项目最初用于系统学习 C++ 网络编程，第一阶段完成了自定义协议、命令解析、内存 KV、TTL、RAII、非阻塞 IO、`poll` Reactor、多客户端连接管理、测试、部署和压测。第二阶段在此基础上进行了完整的准生产化改造，重点解决工程质量、慢客户端、资源边界、事件后端抽象、优雅退出、日志、运行指标和性能验证等问题。
 
----
-
-## 1. 项目特性
-
-- 基于 C++17 实现，使用 CMake 构建；
-- 支持 macOS 本地开发和 Linux 服务器部署；
-- 使用自定义应用层协议：`4 字节大端长度字段 + payload`；
-- 解决 TCP 粘包、半包、多包连续到达问题；
-- 实现 `PING / SET / GET / DEL / EXPIRE / TTL / STATS / QUIT` 命令；
-- 使用 `std::unordered_map` 实现内存 KV 存储；
-- 支持 TTL 过期机制；
-- 采用 lazy delete + 后台 sweeper 线程清理过期 key；
-- 使用 `ScopedFd` 通过 RAII 管理 Unix 文件描述符；
-- 基于非阻塞 socket + `poll()` 实现单线程 Reactor；
-- 每个连接维护独立 `read_buffer` 和 `write_buffer`；
-- 支持多个客户端同时连接；
-- 提供单元测试、冒烟测试、压测脚本和 Linux 部署脚本。
+当前版本不仅是一个可以运行的网络 Demo，也是一套结构完整、可测试、可部署、可观测、可继续演进的 C++ 网络服务工程。
 
 ---
 
-## 2. 技术栈
+## 1. 项目目标
 
-| 类别 | 技术 |
-|---|---|
-| 编程语言 | C++17 |
-| 构建系统 | CMake |
-| 网络模型 | TCP、非阻塞 socket、poll Reactor |
-| 系统 API | POSIX socket、fcntl、poll、pthread |
-| 存储结构 | `std::unordered_map` |
-| 并发机制 | `std::thread`、`std::mutex`、`std::condition_variable` |
-| 测试 | ctest、自定义 assert 测试 |
-| 部署 | shell、rsync / tar + ssh |
-| 压测 | Python socket 多连接脚本 |
+TinyKVCache 主要用于训练和展示以下能力：
+
+- C++17 工程组织与 CMake 构建；
+- POSIX TCP socket 编程；
+- TCP 粘包、半包和消息边界处理；
+- 非阻塞 IO 与单线程 Reactor；
+- `poll` / `epoll` 多路复用；
+- RAII 与文件描述符所有权管理；
+- 连接级读写缓冲区；
+- 部分写、慢客户端保护和背压；
+- TTL 与后台过期清理；
+- 跨线程停止通知与优雅退出；
+- Sanitizer、CI 和端到端测试；
+- 日志、运行指标和延迟统计；
+- macOS 开发与 Linux 部署。
 
 ---
 
-## 3. 项目架构
+## 2. 核心能力
+
+### 2.1 网络与协议
+
+- 使用 TCP 长连接；
+- 自定义应用层协议：`4 字节大端长度字段 + payload`；
+- 每个连接维护独立 `readBuffer`；
+- 正确处理半包、粘包和连续多帧；
+- 单帧大小限制，防止异常长度字段造成内存压力；
+- 非阻塞 `recv()` / `send()`；
+- 正确处理 `EINTR`、`EAGAIN`、`EWOULDBLOCK`、连接关闭和错误事件。
+
+### 2.2 Reactor
+
+- 单线程 Reactor 管理监听 fd、客户端 fd 和内部唤醒 fd；
+- `Poller` 抽象统一事件接口；
+- macOS 默认使用 `PollPoller`；
+- Linux 默认使用 `EpollPoller`；
+- Linux 可强制切换回 `poll` 进行性能对照；
+- 当前 `epoll` 使用 level-triggered 模式；
+- 连接事件根据运行状态动态切换：
+  - `Read`
+  - `Read | Write`
+  - `Write`
+  - 关闭并移除
+
+### 2.3 内存 KV 与 TTL
+
+支持以下命令：
+
+| 命令 | 示例 | 说明 |
+|---|---|---|
+| `PING` | `PING` | 服务存活检查 |
+| `SET` | `SET name xiaofeng` | 写入或覆盖 key |
+| `GET` | `GET name` | 读取 value |
+| `DEL` | `DEL name` | 删除 key |
+| `EXPIRE` | `EXPIRE name 10` | 设置 TTL |
+| `TTL` | `TTL name` | 查询剩余 TTL |
+| `STATS` | `STATS` | 查询存储和服务指标 |
+| `QUIT` | `QUIT` | 返回响应后关闭当前连接 |
+
+TTL 返回值约定：
 
 ```text
-tinykv_client
-    |
-    |  TCP frame: 4-byte length + payload
-    v
-tinykv_server
-    |
-    v
-TcpServer
-    |
-    |-- SocketUtil        创建 socket、bind、listen、connect、设置非阻塞
-    |-- ScopedFd          RAII 管理 fd 生命周期
-    |-- FrameCodec        应用层协议编解码，处理粘包和半包
-    |-- CommandParser     将 payload 解析成结构化命令
-    |-- CommandExecutor   执行业务命令并生成响应
-    |-- KVStore           内存 key-value 存储与 TTL 管理
+-2：key 不存在或已经过期
+-1：key 存在，但没有设置 TTL
+>=0：剩余过期秒数
 ```
 
-服务端主流程：
+过期清理采用：
 
 ```text
-poll()
-  |
-  |-- listen fd 可读
-  |       |
-  |       v
-  |     accept 新连接
-  |
-  |-- client fd 可读
-  |       |
-  |       v
-  |     recv -> read_buffer -> FrameCodec::decode
-  |       |
-  |       v
-  |     parse_command -> CommandExecutor -> KVStore
-  |       |
-  |       v
-  |     response -> FrameCodec::encode -> write_buffer
-  |
-  |-- client fd 可写
-          |
-          v
-        flush write_buffer
+访问时惰性删除 + 后台 sweeper 周期清理
+```
+
+后台 sweeper 使用：
+
+- `std::thread`
+- `std::mutex`
+- `std::condition_variable`
+- 原子运行标志
+
+服务停止时会主动唤醒并 `join()` 后台线程。
+
+### 2.4 连接资源治理
+
+第二阶段增加了明确的连接资源边界：
+
+- `OutputBuffer` 使用读偏移，避免每次部分写后执行 `erase(0, n)`；
+- 输出缓冲区达到高水位时暂停该连接的读事件；
+- 输出缓冲区下降到低水位时恢复读事件；
+- 超过硬上限时关闭慢客户端；
+- 限制单次读事件的最大读取量；
+- 限制单次写事件的最大发送量；
+- 限制单次监听事件的最大 `accept()` 数量；
+- 避免单个繁忙连接长期占用 Reactor；
+- 避免慢客户端造成服务端内存无限增长。
+
+默认限制可通过 `TcpServerOptions` 调整，典型配置为：
+
+```text
+最大读缓冲区：约 1 MiB
+写低水位：512 KiB
+写高水位：1 MiB
+写硬上限：4 MiB
+单次写预算：64 KiB
+单次 accept 上限：64
 ```
 
 ---
 
-## 4. 目录结构
+## 3. 第二阶段优化内容
+
+### Day 1：工程质量门禁
+
+- 完整编译警告；
+- Warnings-as-Errors；
+- AddressSanitizer；
+- UndefinedBehaviorSanitizer；
+- ThreadSanitizer；
+- Debug / Release / RelWithDebInfo 构建；
+- 真实 TCP 端到端测试；
+- 多客户端、半包、粘包和 QUIT 语义测试；
+- macOS 与 Linux CI。
+
+### Day 2：背压与事件公平性
+
+- `OutputBuffer` 读偏移；
+- 延迟 compact，减少内存搬移；
+- 高低水位背压；
+- 慢客户端硬上限；
+- 单次读写预算；
+- 单次 accept 预算；
+- 慢客户端隔离测试。
+
+### Day 3：Poller 抽象
+
+- 统一 `IoEvent`；
+- `Poller::Add / Modify / Remove / Wait`；
+- 跨平台 `PollPoller`；
+- Linux `EpollPoller`；
+- 自动后端选择；
+- 公共 Poller 契约测试；
+- `TcpServer` 与具体系统调用解耦。
+
+### Day 4：优雅退出
+
+- 基于 `socketpair()` 的 `WakeupChannel`；
+- 跨线程立即唤醒事件循环；
+- `SIGINT` / `SIGTERM`；
+- 信号处理函数只执行 async-signal-safe 的 `write()`；
+- 忽略 `SIGPIPE`；
+- 生命周期状态机：
+  - `Created`
+  - `Running`
+  - `Draining`
+  - `Stopped`
+- 停止 accept；
+- 停止读取新请求；
+- 尽量排空已经生成的响应；
+- 退出超时后强制关闭慢连接；
+- 正常停止和回收 sweeper。
+
+### Day 5：可观测性
+
+- 线程安全分级日志；
+- `Debug / Info / Warn / Error / Off`；
+- 连接数和流量指标；
+- 协议错误与命令错误；
+- 背压切换次数；
+- 慢客户端断开次数；
+- TTL 清理指标；
+- 强制退出连接数量；
+- 命令处理平均和最大延迟；
+- 延迟直方图；
+- STATS 扩展；
+- benchmark P50 / P95 / P99；
+- JSON 性能报告。
+
+---
+
+## 4. 总体架构
+
+```text
+                           ┌─────────────────────┐
+                           │   tinykv_client     │
+                           └──────────┬──────────┘
+                                      │
+                     4-byte length + payload
+                                      │
+                           ┌──────────▼──────────┐
+                           │   tinykv_server     │
+                           └──────────┬──────────┘
+                                      │
+                           ┌──────────▼──────────┐
+                           │     TcpServer       │
+                           │  Reactor / 生命周期 │
+                           └──────────┬──────────┘
+                                      │
+             ┌────────────────────────┼─────────────────────────┐
+             │                        │                         │
+   ┌─────────▼─────────┐    ┌─────────▼─────────┐     ┌────────▼────────┐
+   │      Poller       │    │    Connection     │     │ WakeupChannel   │
+   │ poll / epoll      │    │ read/write buffer │     │ Stop / Signal   │
+   └─────────┬─────────┘    │ backpressure      │     └─────────────────┘
+             │              └─────────┬─────────┘
+             │                        │
+             │              ┌─────────▼─────────┐
+             │              │    FrameCodec     │
+             │              └─────────┬─────────┘
+             │                        │
+             │              ┌─────────▼─────────┐
+             │              │ CommandParser     │
+             │              └─────────┬─────────┘
+             │                        │
+             │              ┌─────────▼─────────┐
+             │              │ CommandExecutor   │
+             │              └─────────┬─────────┘
+             │                        │
+             │              ┌─────────▼─────────┐
+             │              │      KVStore      │
+             │              │ TTL / Sweeper     │
+             │              └───────────────────┘
+             │
+   ┌─────────▼─────────┐
+   │ Logger / Metrics  │
+   └───────────────────┘
+```
+
+---
+
+## 5. Reactor 请求流程
+
+以 `PING` 为例：
+
+```text
+客户端发送 PING frame
+        ↓
+内核接收缓冲区变为可读
+        ↓
+Poller 返回 Read 事件
+        ↓
+TcpServer::HandleClientRead
+        ↓
+recv()
+        ↓
+FrameCodec::Decode
+        ↓
+CommandParser
+        ↓
+CommandExecutor
+        ↓
+生成 +PONG
+        ↓
+编码并追加到 Connection::writeBuffer
+        ↓
+Poller::Modify(Read | Write)
+        ↓
+Poller 返回 Write 事件
+        ↓
+TcpServer::HandleClientWrite
+        ↓
+send()
+        ↓
+OutputBuffer::Consume
+        ↓
+writeBuffer 清空
+        ↓
+Poller::Modify(Read)
+```
+
+Reactor 接收到的是 **IO 就绪通知**，不是 IO 完成通知：
+
+- `Read`：当前调用 `recv()` 很可能取得进展；
+- `Write`：当前调用 `send()` 很可能取得进展；
+- 实际读写仍由应用程序执行；
+- 一次 `recv()` 不保证得到完整消息；
+- 一次 `send()` 不保证写完完整响应。
+
+---
+
+## 6. 项目目录
 
 ```text
 tiny-kv-cache/
@@ -98,276 +298,243 @@ tiny-kv-cache/
 ├── app/
 │   ├── client_main.cpp
 │   └── server_main.cpp
+├── cmake/
+│   ├── compiler_warnings.cmake
+│   └── sanitizers.cmake
 ├── include/
 │   └── tinykv/
 │       ├── core/
-│       │   ├── Command.h
-│       │   ├── CommandExecutor.h
-│       │   ├── FrameCodec.h
-│       │   └── KVStore.h
-│       └── net/
-│           ├── ScopedFd.h
-│           ├── SocketUtil.h
-│           └── TcpServer.h
+│       │   ├── command.h
+│       │   ├── command_executor.h
+│       │   ├── frame_codec.h
+│       │   └── kv_store.h
+│       ├── net/
+│       │   ├── output_buffer.h
+│       │   ├── scoped_fd.h
+│       │   ├── socket_util.h
+│       │   ├── tcp_server.h
+│       │   ├── termination_signal_handler.h
+│       │   ├── wakeup_channel.h
+│       │   └── poll/
+│       │       ├── io_event.h
+│       │       ├── poller.h
+│       │       ├── poller_factory.h
+│       │       ├── poll_poller.h
+│       │       └── epoll_poller.h
+│       └── observability/
+│           ├── logger.h
+│           └── server_metrics.h
 ├── src/
 │   ├── core/
-│   │   ├── Command.cpp
-│   │   ├── CommandExecutor.cpp
-│   │   ├── FrameCodec.cpp
-│   │   └── KVStore.cpp
-│   └── net/
-│       ├── ScopedFd.cpp
-│       ├── SocketUtil.cpp
-│       └── TcpServer.cpp
+│   ├── net/
+│   │   └── poll/
+│   └── observability/
 ├── tests/
+│   ├── integration/
 │   ├── test_command.cpp
 │   ├── test_command_executor.cpp
 │   ├── test_frame_codec.cpp
 │   ├── test_kv_store.cpp
+│   ├── test_output_buffer.cpp
+│   ├── test_poller.cpp
 │   ├── test_scoped_fd.cpp
+│   ├── test_server_metrics.cpp
 │   ├── test_socket_util.cpp
-│   └── test_smoke.cpp
+│   └── test_wakeup_channel.cpp
 ├── scripts/
+│   ├── benchmark.py
 │   ├── build_release.sh
-│   ├── run_server.sh
 │   ├── deploy_linux.sh
 │   ├── deploy_linux_tar.sh
-│   ├── smoke_test.py
-│   └── benchmark.py
+│   ├── run_server.sh
+│   ├── slow_client_test.py
+│   └── smoke_test.py
 └── docs/
-    ├── v1/
-    │   ├── stage1_frame_codec.md
-    │   ├── stage2_command_parser.md
-    │   ├── stage3_kv_store.md
-    │   ├── stage4_scoped_fd.md
-    │   ├── stage5_socket_util.md
-    │   ├── stage6_client.md
-    │   ├── stage7_blocking_server.md
-    │   ├── stage8_tcp_server.md
-    │   ├── stage9_poll_reactor.md
-    |   ├── stage10_sweep_thread.md
-    │   └── stage11_scripts.md
-    └── v2/
-        └── stage1_quality_gate.md
+    ├── optimization/
+    └── stage*.md
 ```
+
+实际文件名以当前仓库为准。
 
 ---
 
-## 5. 快速开始
+## 7. 环境要求
 
-### 5.1 环境要求
-
-macOS 或 Linux 环境下需要：
-
-- C++17 编译器：`clang++` 或 `g++`
-- CMake 3.14+
-- Python 3，用于冒烟测试和压测脚本
-- Linux 部署时建议安装 `rsync`
-
-macOS 可以使用：
+### macOS
 
 ```bash
 brew install cmake rsync
 ```
 
-Ubuntu / Debian 可以使用：
+使用系统 AppleClang 编译。
+
+### Ubuntu / Debian
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake rsync python3
+sudo apt install -y \
+  build-essential \
+  cmake \
+  clang \
+  rsync \
+  python3
 ```
 
-CentOS / Rocky / AlmaLinux 可以使用：
+### CentOS / Rocky / AlmaLinux
 
 ```bash
-sudo yum install -y gcc gcc-c++ cmake rsync python3
-```
-
-或者：
-
-```bash
-sudo dnf install -y gcc gcc-c++ cmake rsync python3
+sudo dnf install -y \
+  gcc \
+  gcc-c++ \
+  clang \
+  cmake \
+  rsync \
+  python3
 ```
 
 ---
 
-### 5.2 Debug 构建
+## 8. 构建
+
+### 8.1 Debug + 质量门禁
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTINYKV_BUILD_TESTS=ON
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -S . -B build-quality \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DTINYKV_BUILD_TESTS=ON \
+  -DTINYKV_BUILD_INTEGRATION_TESTS=ON \
+  -DTINYKV_WARNINGS_AS_ERRORS=ON
+
+cmake --build build-quality -j
+
+ctest \
+  --test-dir build-quality \
+  --output-on-failure
 ```
 
-构建完成后会生成：
-
-```text
-build/tinykv_server
-build/tinykv_client
-```
-
----
-
-### 5.3 Release 构建
-
-推荐使用项目脚本：
+### 8.2 Release
 
 ```bash
 ./scripts/build_release.sh
 ```
 
-构建产物位于：
+### 8.3 ASan + UBSan
 
-```text
-build-release/tinykv_server
-build-release/tinykv_client
+```bash
+cmake -S . -B build-asan \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DTINYKV_BUILD_TESTS=ON \
+  -DTINYKV_BUILD_INTEGRATION_TESTS=ON \
+  -DTINYKV_WARNINGS_AS_ERRORS=ON \
+  -DTINYKV_ENABLE_ASAN=ON \
+  -DTINYKV_ENABLE_UBSAN=ON
+
+cmake --build build-asan -j
+
+ASAN_OPTIONS=halt_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+ctest \
+  --test-dir build-asan \
+  --output-on-failure
 ```
+
+### 8.4 TSan
+
+```bash
+cmake -S . -B build-tsan \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DTINYKV_BUILD_TESTS=ON \
+  -DTINYKV_BUILD_INTEGRATION_TESTS=ON \
+  -DTINYKV_WARNINGS_AS_ERRORS=ON \
+  -DTINYKV_ENABLE_TSAN=ON
+
+cmake --build build-tsan -j
+
+TSAN_OPTIONS=halt_on_error=1 \
+ctest \
+  --test-dir build-tsan \
+  --output-on-failure
+```
+
+TSan 建议优先在 Linux 环境运行。
 
 ---
 
-## 6. 本地运行
+## 9. 运行
 
-### 6.1 启动服务端
-
-Debug 版本：
+### 9.1 服务端
 
 ```bash
-./build/tinykv_server 127.0.0.1 7777
+./build-quality/tinykv_server \
+  127.0.0.1 \
+  7777 \
+  auto \
+  info
 ```
 
-Release 版本：
-
-```bash
-./build-release/tinykv_server 127.0.0.1 7777
-```
-
-或者使用脚本：
-
-```bash
-./scripts/run_server.sh 127.0.0.1 7777
-```
-
-如果希望允许远程机器连接，需要监听：
-
-```bash
-./scripts/run_server.sh 0.0.0.0 7777
-```
-
----
-
-### 6.2 启动客户端
-
-```bash
-./build/tinykv_client 127.0.0.1 7777
-```
-
-示例交互：
+参数格式：
 
 ```text
-connected to 127.0.0.1:7777
+tinykv_server <host> <port> [auto|poll|epoll] [debug|info|warn|error|off]
+```
+
+后端选择：
+
+```text
+auto：
+  macOS -> poll
+  Linux -> epoll
+
+poll：
+  强制使用 poll
+
+epoll：
+  强制使用 epoll，仅 Linux 支持
+```
+
+允许远程访问：
+
+```bash
+./build-release/tinykv_server \
+  0.0.0.0 \
+  7777 \
+  auto \
+  info
+```
+
+### 9.2 客户端
+
+```bash
+./build-quality/tinykv_client \
+  127.0.0.1 \
+  7777
+```
+
+示例：
+
+```text
 > PING
 +PONG
+
 > SET name xiaofeng
 +OK
+
 > GET name
 $xiaofeng
-> STATS
-+keys=1,persistent=1,expiring=0
+
+> EXPIRE name 10
++OK
+
+> TTL name
+$10
+
 > QUIT
 +BYE
 ```
 
 ---
 
-## 7. 协议设计
-
-TinyKVCache 使用自定义二进制帧协议：
-
-```text
-4 字节 payload 长度 + payload 内容
-```
-
-其中：
-
-```text
-前 4 字节：uint32_t，网络字节序，大端序
-后 N 字节：payload 原始内容
-```
-
-例如 payload 为：
-
-```text
-PING
-```
-
-编码后为：
-
-```text
-00 00 00 04 50 49 4E 47
-```
-
-该协议可以处理：
-
-- 半包：一次 `recv()` 只收到一部分消息；
-- 粘包：一次 `recv()` 收到多条消息；
-- 多包连续到达；
-- payload 中包含空格或其他普通字符。
-
-服务端为每个连接维护独立的 `read_buffer`。每次收到数据后，先追加到 `read_buffer`，再调用 `FrameCodec::decode()` 尽可能解析出完整 payload。
-
----
-
-## 8. 命令说明
-
-| 命令 | 示例 | 响应 | 说明 |
-|---|---|---|---|
-| `PING` | `PING` | `+PONG` | 心跳命令 |
-| `SET` | `SET name xiaofeng` | `+OK` | 设置 key-value |
-| `GET` | `GET name` | `$xiaofeng` / `$nil` | 获取 value |
-| `DEL` | `DEL name` | `+OK` / `$nil` | 删除 key |
-| `EXPIRE` | `EXPIRE name 10` | `+OK` / `$nil` | 设置过期时间 |
-| `TTL` | `TTL name` | `$10` / `$-1` / `$-2` | 查看剩余过期时间 |
-| `STATS` | `STATS` | `+keys=1,persistent=1,expiring=0` | 查看统计信息 |
-| `QUIT` | `QUIT` | `+BYE` | 关闭当前连接 |
-
-### TTL 返回语义
-
-```text
--2：key 不存在，或者 key 已经过期
--1：key 存在，但没有设置过期时间
->=0：key 剩余过期秒数
-```
-
-### SET 与 TTL
-
-本项目约定：
-
-```text
-SET 会覆盖旧 value，并清除原有 TTL。
-```
-
-例如：
-
-```text
-SET name xiaofeng
-EXPIRE name 10
-SET name han
-TTL name
-```
-
-此时返回：
-
-```text
-$-1
-```
-
-表示 key 存在，但没有过期时间。
-
----
-
-## 9. 响应格式
-
-TinyKVCache 使用简单文本响应格式：
+## 10. 响应格式
 
 ```text
 +xxx       普通成功响应
@@ -376,360 +543,365 @@ $nil       空结果
 -ERR xxx   错误响应
 ```
 
-示例：
+---
+
+## 11. STATS
+
+`STATS` 会返回 KVStore 和服务运行指标，典型字段包括：
 
 ```text
-PING            -> +PONG
-SET a 1         -> +OK
-GET a           -> $1
-GET missing     -> $nil
-UNKNOWN         -> -ERR unknown command
-STATS           -> +keys=1,persistent=1,expiring=0
+keys
+persistent
+expiring
+connections_active
+connections_accepted
+connections_closed
+bytes_received
+bytes_sent
+frames_received
+commands
+command_errors
+protocol_errors
+slow_clients
+read_pauses
+read_resumes
+expired_removed
+max_pending_write_bytes
+latency_avg_us
+latency_max_us
+latency_p95_upper_us
+latency_p99_upper_us
 ```
+
+服务端 P95 / P99 来自固定延迟直方图，表示对应桶的上界，不是保存全部样本后计算的精确百分位。
 
 ---
 
-## 10. 测试
+## 12. 测试
 
 运行全部测试：
 
 ```bash
-ctest --test-dir build --output-on-failure
+ctest \
+  --test-dir build-quality \
+  --output-on-failure
 ```
 
-单独运行测试：
+只运行单元测试：
 
 ```bash
-./build/test_frame_codec
-./build/test_command
-./build/test_command_executor
-./build/test_kv_store
-./build/test_scoped_fd
-./build/test_socket_util
+ctest \
+  --test-dir build-quality \
+  -L unit \
+  --output-on-failure
 ```
 
-测试覆盖内容：
+只运行集成测试：
 
-| 测试 | 覆盖内容 |
-|---|---|
-| `test_frame_codec` | 协议编码、解码、粘包、半包、异常长度 |
-| `test_command` | 命令解析、参数校验、大小写处理 |
-| `test_command_executor` | 命令执行、响应格式、业务语义 |
-| `test_kv_store` | SET/GET/DEL/EXPIRE/TTL/STATS |
-| `test_scoped_fd` | RAII、移动语义、release/reset |
-| `test_socket_util` | socket 创建、监听、非阻塞设置 |
-| `test_smoke` | 基础构建验证 |
+```bash
+ctest \
+  --test-dir build-quality \
+  -L integration \
+  --output-on-failure
+```
+
+测试覆盖：
+
+- FrameCodec 编解码；
+- 半包和粘包；
+- 命令解析；
+- 命令执行；
+- KVStore 与 TTL；
+- ScopedFd 移动语义；
+- SocketUtil；
+- OutputBuffer；
+- Poller 公共契约；
+- poll / epoll；
+- WakeupChannel；
+- SIGTERM 唤醒；
+- ServerMetrics；
+- 多客户端共享 KVStore；
+- QUIT 只关闭当前连接；
+- 优雅退出。
 
 ---
 
-## 11. 冒烟测试
-
-先启动服务端：
+## 13. 冒烟测试
 
 ```bash
-./build-release/tinykv_server 127.0.0.1 7777
+python3 scripts/smoke_test.py \
+  --host 127.0.0.1 \
+  --port 7777
 ```
-
-另一个终端执行：
-
-```bash
-python3 scripts/smoke_test.py --host 127.0.0.1 --port 7777
-```
-
-冒烟测试会自动验证：
-
-- `PING`
-- `SET`
-- `GET`
-- `EXPIRE`
-- `TTL`
-- `STATS`
-- `QUIT`
 
 ---
 
-## 12. 压测
-
-启动服务端后执行：
+## 14. 慢客户端隔离测试
 
 ```bash
-python3 scripts/benchmark.py --host 127.0.0.1 --port 7777 --connections 10 --requests 1000
+python3 scripts/slow_client_test.py \
+  --host 127.0.0.1 \
+  --port 7777
 ```
 
-示例输出：
+该测试会创建一个只发送请求但不读取响应的慢客户端，同时使用正常客户端发送 `PING`，验证：
+
+- 正常客户端仍然可以及时收到响应；
+- 慢客户端不会无限扩大服务端写缓冲区；
+- 达到硬上限后服务端可以关闭慢连接。
+
+---
+
+## 15. 压测
+
+```bash
+python3 scripts/benchmark.py \
+  --host 127.0.0.1 \
+  --port 7777 \
+  --connections 100 \
+  --requests 200 \
+  --value-size 32 \
+  --output-json benchmark_result.json
+```
+
+压测输出包括：
 
 ```text
-benchmark result
-----------------
-total_requests : 30000
-total_errors   : 0
-elapsed_sec    : 1.234
-qps            : 24311.12
-avg_latency_ms : 0.411
+total_requests
+total_errors
+elapsed_seconds
+qps
+latency_average_ms
+latency_p50_ms
+latency_p95_ms
+latency_p99_ms
+latency_max_ms
 ```
 
-说明：
-
-- `connections` 表示并发 TCP 连接数；
-- `requests` 表示每个连接的循环次数；
-- 每轮会执行 `PING / SET / GET` 三条命令；
-- 该压测脚本用于功能和粗略吞吐验证，不等价于专业压测工具。
+建议使用 Release 构建，并将日志等级设置为 `warn` 或 `error`。
 
 ---
 
-## 13. Linux 部署
+## 16. 优雅退出
 
-### 13.1 使用 rsync 部署
+支持：
 
-```bash
-./scripts/deploy_linux.sh user@server_ip
+```text
+Ctrl+C
+SIGINT
+SIGTERM
+TcpServer::Stop()
 ```
 
-指定 SSH 端口和远程目录：
+退出过程：
 
-```bash
-./scripts/deploy_linux.sh user@server_ip 22 ~/tinykv-cache
+```text
+收到停止请求
+    ↓
+WakeupChannel 唤醒 Poller
+    ↓
+进入 Draining
+    ↓
+停止接受新连接
+    ↓
+停止读取新请求
+    ↓
+继续发送已经排队的响应
+    ↓
+连接全部排空后退出
+    ↓
+或到达超时后强制关闭
+    ↓
+停止并 join sweeper
+    ↓
+释放 Poller、socket 和连接
 ```
 
-部署完成后登录服务器：
+信号处理器不会直接操作 `TcpServer`，只通过非阻塞 `write()` 通知事件循环。
+
+---
+
+## 17. Linux 部署
+
+### rsync
 
 ```bash
-ssh user@server_ip
+./scripts/deploy_linux.sh \
+  user@server_ip \
+  22 \
+  ~/tinykv-cache
+```
+
+### tar + ssh
+
+```bash
+./scripts/deploy_linux_tar.sh \
+  user@server_ip \
+  22 \
+  ~/tinykv-cache
+```
+
+服务器启动：
+
+```bash
 cd ~/tinykv-cache
-./scripts/run_server.sh 0.0.0.0 7777
-```
 
-本地连接远程服务端：
-
-```bash
-./build-release/tinykv_client server_ip 7777
-```
-
-或者运行冒烟测试：
-
-```bash
-python3 scripts/smoke_test.py --host server_ip --port 7777
+./scripts/run_server.sh \
+  0.0.0.0 \
+  7777
 ```
 
 ---
 
-### 13.2 使用 tar + ssh 部署
+## 18. 日志
 
-如果远程服务器没有安装 `rsync`，可以使用备用脚本：
-
-```bash
-./scripts/deploy_linux_tar.sh user@server_ip
-```
-
-指定 SSH 端口和远程目录：
-
-```bash
-./scripts/deploy_linux_tar.sh user@server_ip 22 ~/tinykv-cache
-```
-
----
-
-## 14. 常见问题
-
-### 14.1 `bash: rsync: command not found`
-
-`rsync` 远程同步要求本地和服务器都安装 `rsync`。  
-如果服务器没有安装，可以在服务器执行：
-
-```bash
-sudo apt install -y rsync
-```
-
-或改用：
-
-```bash
-./scripts/deploy_linux_tar.sh user@server_ip
-```
-
----
-
-### 14.2 `std::memcpy` 未声明
-
-如果 Linux 编译时报：
+支持以下等级：
 
 ```text
-error: ‘memcpy’ is not a member of ‘std’
+debug
+info
+warn
+error
+off
 ```
 
-需要在使用 `std::memcpy` 的 `.cpp` 文件中显式包含：
-
-```cpp
-#include <cstring>
-```
-
----
-
-### 14.3 `undefined reference to pthread_create`
-
-如果 Linux 链接时报：
+建议：
 
 ```text
-undefined reference to pthread_create
+开发调试：debug
+普通运行：info
+性能测试：warn / error
 ```
 
-说明没有正确链接 pthread。  
-CMake 中应包含：
+日志覆盖：
 
-```cmake
-find_package(Threads REQUIRED)
+- 服务启动和停止；
+- Poller 后端；
+- 连接建立和断开；
+- 协议错误；
+- 慢客户端；
+- 背压暂停和恢复；
+- TTL 清理；
+- 强制退出。
 
-target_link_libraries(tinykv PUBLIC
-    tinykv_options
-    Threads::Threads
-)
-```
+信号处理函数中禁止使用 Logger。
 
 ---
 
-### 14.4 远程客户端连接不上服务端
+## 19. 工程亮点
 
-优先检查：
+### 19.1 应用层协议
 
-1. 服务端是否监听 `0.0.0.0`，而不是只监听 `127.0.0.1`；
-2. 云服务器安全组是否开放端口；
-3. Linux 防火墙是否放行端口；
-4. 服务端进程是否正在运行；
-5. 客户端使用的 IP 和端口是否正确。
+TCP 是字节流，不保存消息边界。项目使用 4 字节长度字段协议和连接级 `readBuffer`，处理半包、粘包和多帧连续到达。
 
----
+### 19.2 RAII
 
-## 15. 实现细节
+`ScopedFd`：
 
-### 15.1 Reactor 模型
+- 析构自动 `close()`；
+- 禁止拷贝；
+- 支持移动；
+- 支持 `Release()` 和 `Reset()`；
+- 避免 fd 泄漏和 double close。
 
-阶段 10 后，服务端使用单线程 `poll` Reactor：
+### 19.3 部分写
 
-```text
-listen fd:
-    关注 POLLIN，用于 accept 新连接
+非阻塞 `send()` 不保证写完全部响应。未写完数据保存在 `OutputBuffer`，后续 Write 事件继续发送。
 
-client fd:
-    默认关注 POLLIN，用于 recv 请求
-    当 write_buffer 非空时，额外关注 POLLOUT，用于继续发送响应
-```
+### 19.4 背压
 
-所有 socket 均设置为非阻塞模式。
+响应积压达到高水位后暂停读取，降到低水位后恢复。超过硬上限时关闭慢客户端。
 
----
+### 19.5 Poller 解耦
 
-### 15.2 连接状态
+`TcpServer` 不直接依赖 `pollfd` 或 `epoll_event`，只依赖统一 `Poller` 接口。
 
-每个客户端连接维护：
+### 19.6 生命周期
 
-```cpp
-struct Connection {
-    ScopedFd fd;
-    std::string read_buffer;
-    std::string write_buffer;
-    bool close_after_write;
-    bool closed;
-};
-```
+通过 WakeupChannel 将跨线程停止和信号转换为普通 IO 事件，所有连接和 Poller 状态仍由 Reactor 线程统一修改。
 
-其中：
+### 19.7 可观测性
 
-- `read_buffer` 用于保存未解析完的半包数据；
-- `write_buffer` 用于保存未发送完的响应数据；
-- `close_after_write` 用于处理 `QUIT` 命令；
-- `closed` 表示连接需要被清理。
+日志回答“发生了什么”，指标回答“发生了多少次以及当前状态如何”。
+
+### 19.8 工程质量
+
+- 零警告构建；
+- Werror；
+- ASan；
+- UBSan；
+- TSan；
+- 单元测试；
+- 集成测试；
+- CI；
+- Release 压测。
 
 ---
 
-### 15.3 TTL 清理
+## 20. 已解决的典型问题
 
-KVStore 采用：
-
-```text
-lazy delete + background sweeper
-```
-
-访问 key 时会检查是否过期并删除；后台线程会周期性调用：
-
-```cpp
-KVStore::sweep_expired()
-```
-
-清理长期未访问的过期 key。
-
-后台 sweeper 使用：
-
-```cpp
-std::thread
-std::condition_variable
-```
-
-服务停止时可以及时唤醒并退出。
+- Mac 和 Linux 间接 include 差异；
+- `std::memcpy` 缺失 `<cstring>`；
+- pthread 链接缺失；
+- CMake 非法宏参数；
+- `assert` 在 RelWithDebInfo 中被 `NDEBUG` 移除；
+- 移动构造和 deleted copy constructor；
+- `read()` 写入 const 缓冲区；
+- `POLLOUT` 兴趣未更新；
+- Read/Write 事件使用 `else if` 导致写事件丢失；
+- 输出缓冲区频繁 `erase()`；
+- 慢客户端内存增长；
+- Reactor 单连接饥饿；
+- Poller 等待无法及时停止；
+- 信号处理安全；
+- SIGPIPE；
+- sweeper 线程生命周期。
 
 ---
 
-### 15.4 RAII fd 管理
+## 21. 当前限制
 
-`ScopedFd` 用于管理 Unix 文件描述符：
-
-```text
-构造时接管 fd
-析构时自动 close
-禁止拷贝
-允许移动
-```
-
-这样可以避免：
-
-- fd 泄漏；
-- 异常路径忘记 close；
-- double close；
-- fd 所有权不清晰。
+- 单线程 Reactor；
+- 业务命令在 Reactor 线程中执行；
+- 无磁盘持久化；
+- 无主从复制；
+- 无认证和 TLS；
+- TTL sweeper 仍然是全量扫描；
+- 没有连接空闲超时；
+- 没有外部 Prometheus / HTTP 指标接口；
+- 没有 kqueue 后端；
+- 没有线程池和任务队列；
+- 没有正式 Redis RESP 兼容。
 
 ---
 
-## 16. 面试亮点
+## 22. 后续演进方向
 
-这个项目适合在 C++ 后端面试中重点讲以下内容：
-
-1. **TCP 粘包/半包处理**  
-   使用 4 字节长度字段协议，每个连接维护 `read_buffer`。
-
-2. **非阻塞 IO 与 poll Reactor**  
-   使用单线程 `poll()` 同时管理 listen fd 和多个 client fd。
-
-3. **部分写处理**  
-   非阻塞 `send()` 不保证一次写完，使用连接级 `write_buffer` 保存剩余数据。
-
-4. **RAII 资源管理**  
-   使用 `ScopedFd` 管理 fd 生命周期，禁止拷贝、允许移动。
-
-5. **模块分层清晰**  
-   `FrameCodec`、`CommandParser`、`CommandExecutor`、`KVStore`、`TcpServer` 职责分离。
-
-6. **TTL 设计**  
-   使用 `steady_clock` 实现 TTL，采用 lazy delete + 后台 sweeper 清理过期 key。
-
-7. **工程化能力**  
-   提供 CMake、ctest、部署脚本、冒烟测试、压测脚本。
+1. macOS `kqueue` 后端；
+2. 空闲连接超时和定时器；
+3. 时间轮或最小堆 TTL；
+4. Reactor + worker 线程池；
+5. 跨线程任务队列和 wakeup；
+6. 配置文件；
+7. Prometheus 指标导出；
+8. 结构化 JSON 日志；
+9. AOF 持久化；
+10. Redis RESP 子集；
+11. TLS；
+12. fuzz testing；
+13. benchmark 回归门禁；
+14. 容器化与 systemd 部署。
 
 ---
 
-## 17. 当前限制与后续优化
+## 23. 面试说明
 
-当前版本是教学和面试项目，仍有进一步优化空间：
+可以将项目概括为：
 
-- 使用 `epoll` 替换 `poll`，提高大量连接下的性能；
-- 抽象 `Poller` 接口，支持 Linux `epoll` 和 macOS `kqueue`；
-- 使用多 Reactor 或线程池处理耗时任务；
-- 使用 `write_offset` 优化 `write_buffer.erase()` 的内存移动；
-- 使用小根堆或时间轮优化 TTL 清理；
-- 支持配置文件和日志级别；
-- 支持更多命令，例如 `MGET`、`MSET`、`INCR`；
-- 增加集成测试和 CI；
-- 支持优雅退出和信号处理。
+> TinyKVCache 是一个使用 C++17 实现的轻量级 TCP 内存 KV 服务。服务端采用非阻塞 socket 和单线程 Reactor，抽象了 poll/epoll 后端；使用长度字段协议处理 TCP 半包和粘包；为每个连接维护读写缓冲区，并通过高低水位和硬上限实现慢客户端背压。项目还实现了 TTL、后台过期清理、WakeupChannel、SIGINT/SIGTERM 优雅退出、RAII fd 管理、日志、运行指标、Sanitizer、端到端测试、Linux 部署和性能压测。
 
 ---
 
-## 18. License
+## 24. License
 
-This project is intended for learning and interview preparation. You may adapt it for personal study and demonstration.
+本项目主要用于 C++ 网络编程学习、工程实践和面试展示。可根据个人学习和项目演示需求进行修改与扩展。
