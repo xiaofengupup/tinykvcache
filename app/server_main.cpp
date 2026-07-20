@@ -1,5 +1,6 @@
 #include "tinykv/net/tcp_server.h"
 #include "tinykv/net/wakeup/termination_signal_handler.h"
+#include "tinykv/observability/logger.h"
 
 #include <iostream>
 #include <exception>
@@ -7,8 +8,10 @@
 
 int main(int argc, char *argv[])
 {
-    if (argc < 3 || argc > 4) {
-        std::cerr << "Usage: " << argv[0] << " <host> <port> [auto|poll|epoll]" << std::endl;
+    if (argc < 3 || argc > 5) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <host> <port> [auto|poll|epoll] [debug|info|warn|error|off]"
+                  << std::endl;
         return 1;
     }
 
@@ -17,8 +20,11 @@ int main(int argc, char *argv[])
         const int port = std::stoi(argv[2]);
 
         tinykv::TcpServerOptions options;
-        if (argc == 4) {
+        if (argc >=4) {
             options.pollerBackend = tinykv::ParsePollerBackend(argv[3]);
+        }
+        if (argc >=5) {
+            tinykv::Logger::Instance().SetLevel(tinykv::ParseLogLevel(argv[4]));
         }
         
         // signalHandler 必须在 server 之后构造。

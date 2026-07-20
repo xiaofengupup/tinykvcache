@@ -10,6 +10,7 @@
 #include "tinykv/net/poll/poller.h"
 #include "tinykv/net/poll/poller_factory.h"
 #include "tinykv/net/wakeup/wakeup_channel.h"
+#include "tinykv/observability/server_metrics.h"
 
 #include <string>
 #include <atomic>
@@ -126,7 +127,11 @@ private:
     void ForceCloseAllConnections();
     std::chrono::milliseconds ComputeWaitTimeout() const;
     void CleanupReactor() noexcept;
-    
+
+    std::string BuildStatsResponse();
+    static std::uint64_t
+        EstimatePercentileUpperBoundUs(const ServerMetricsSnapshot &snapshot, double percentile) noexcept;
+
     /**
      * 处理一条完整的 payload
      * 
@@ -180,6 +185,9 @@ private:
     ServerState m_state {ServerState::Created};
     WakeupChannel m_stopWakup;
     std::chrono::steady_clock::time_point m_shutdownDeadline {};
+
+    // server metrics
+    ServerMetrics m_metrics;
 };
 
 } // namespace tinyky

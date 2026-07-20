@@ -4,6 +4,7 @@
 #include "tinykv/core/frame_codec.h"
 #include "tinykv/net/socket_util.h"
 #include "tinykv/net/poll/poller_factory.h"
+#include "tinykv/observability/logger.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -15,6 +16,9 @@
 #include <utility>
 #include <chrono>
 #include <thread>
+#include <array>
+#include <iomanip>
+#include <sstream>
 
 namespace tinykv {
 
@@ -77,7 +81,8 @@ void TcpServer::Run()
 
     m_state = ServerState::Running;
     StartSweeperThread();
-    std::cout << "server listening on " << m_host << ":" << m_port << ", poller=" << m_poller->Name() << "\n";
+    Logger::Instance().Info(
+        "server started, host=", m_host, ", port=", m_port, ", poller=", m_poller->Name());
 
     try {
         while (m_state != ServerState::Stopped) {
@@ -146,7 +151,7 @@ void TcpServer::Run()
     CleanupReactor();
     m_state = ServerState::Stopped;
 
-    std::cout << "server stopped gracefully" << '\n';
+    Logger::Instance().Info("server stopped gracefully");
 }
 
 /**
@@ -172,7 +177,7 @@ void TcpServer::BeginGracefulShutdown()
     m_state = ServerState::Draining;
     m_shutdownDeadline = std::chrono::steady_clock::now() + m_options.gracefulShutdownTimeout;
 
-    std::cout << "graceful shutdown started" << std::endl;
+    Logger::Instance().Info("graceful shutdown started, clients size=", m_clients.size());
     
     // 停止接受新连接
     if (m_listenFd.Valid()) {
@@ -218,7 +223,10 @@ void TcpServer::CheckShutdownProgress()
 
 void TcpServer::ForceCloseAllConnections()
 {
-    std::cerr << "graceful shutdown timed out, force closing " << m_clients.size() << " client(s)" << std::endl;
+    const std::size_t connectionCount = m_clients.size();
+    m_metrics.AddForcedShutdownConnections(connectionCount);
+
+    Logger::Instance().Warn("graceful shutdown timed out, force closing ", connectionCount, " client(s)");
     for (auto& item : m_clients) {
         MarkClosed(item.second);
     }
@@ -288,7 +296,11 @@ void TcpServer::AcceptNewClients()
         }
 
         ++acceptedCount;
-        std::cout << "client connected, fd=" << rawFd << "\n";
+        m_metrics.OnConnectionAccepted();
+        const auto snapshot = m_metrics.Snapshot();
+        Logger::Instance().Info(
+            "client connected, fd=", rawFd, ", active_connections=", snapshot.activeConnections
+        );
     }
 }
 
@@ -327,15 +339,24 @@ void TcpServer::HandleClientRead(Connection &conn)
         return;
     }
 
+    const std::size_t receivedBytes = static_cast<std::size_t>(received);
+    m_metrics.AddBytesReceived(receivedBytes);
+
     std::vector<std::string> payloads;
     try {
         payloads = FrameCodec::Decode(conn.readBuffer, temp.data(), static_cast<std::size_t>(received));
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
+        m_metrics.OnProtocolError();
+        Logger::Instance().Warn(
+            "protocol error, fd=", conn.fd.Get(),
+            ", error=", error.what()
+        );
         if (QueueResponse(conn, "-ERR protocol error")) {
             conn.closeAfterWrite = true;
         }
         return;
     }
+    m_metrics.AddFramesReceived(payloads.size());
 
     for (const auto &payload : payloads) {
         if (!ProcessPayload(conn, payload)) {
@@ -367,7 +388,9 @@ void TcpServer::HandleClientWrite(Connection &conn)
     } while (written < 0 && errno == EINTR);
     
     if (written > 0) {
-        conn.writeBuffer.Consume(static_cast<std::size_t>(written));
+        const std::size_t writtenBytes = static_cast<std::size_t>(written);
+        m_metrics.AddBytesSent(writtenBytes);
+        conn.writeBuffer.Consume(writtenBytes);
         UpdateReadBackPressure(conn);
 
         if (conn.writeBuffer.Empty() && conn.closeAfterWrite) {
@@ -390,8 +413,23 @@ void TcpServer::HandleClientWrite(Connection &conn)
 
 bool TcpServer::ProcessPayload(Connection &conn, const std::string &payload)
 {
+    const auto begin = std::chrono::steady_clock::now();
+
     const Command cmd = ParseCommand(payload);
-    const std::string response = CommandExecutor::Execute(m_store, cmd);
+    m_metrics.OnCommandProcessed();
+    if (cmd.type == CommandType::Unknown) {
+        m_metrics.OnCommandError();
+    }
+
+    std::string response;
+    if (cmd.type == CommandType::Stats) {
+        response = BuildStatsResponse();
+    } else {
+        response = CommandExecutor::Execute(m_store, cmd);
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    m_metrics.RecordCommandLatency(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed));
 
     if (!QueueResponse(conn, response)) {
         return false;
@@ -401,6 +439,12 @@ bool TcpServer::ProcessPayload(Connection &conn, const std::string &payload)
         conn.closeAfterWrite = true; // 先把 +BYE 写完，再关闭连接。
         return false;
     }
+
+    Logger::Instance().Debug(
+        "command processed, fd=", conn.fd.Get(),
+        ", command=", payload,
+        ", response_bytes=", response.size()
+    );
 
     return true;
 }
@@ -419,19 +463,20 @@ bool TcpServer::QueueResponse(Connection& conn, const std::string& response)
     const std::size_t hardLimit = m_options.writeHardLimitBytes;
 
     if (pendingBytes > hardLimit || frame.size() > hardLimit - pendingBytes) {
-        std::cerr << "close slow client, fd="
-            << conn.fd.Get()
-            << ", pending_bytes="
-            << pendingBytes
-            << ", new_frame_bytes="
-            << frame.size()
-            << '\n';
+        m_metrics.OnSlowClientDisconnected();
+        Logger::Instance().Warn(
+            "close slow client, fd=", conn.fd.Get(),
+            ", pending_bytes=", pendingBytes, 
+            ", new_frame_bytes=", frame.size()
+        );
 
         MarkClosed(conn);
         return false;
     }
 
     conn.writeBuffer.Append(frame);
+    m_metrics.ObservePendingWriteBytes(conn.writeBuffer.Size());
+
     UpdateReadBackPressure(conn);
     return true;
 }
@@ -457,7 +502,15 @@ void TcpServer::CleanupClosedConnections()
 
         const int fd = it->first;
         m_poller->Remove(fd);
-        std::cout << "client disconnected, fd=" << fd << "\n";
+        
+        m_metrics.OnConnectionClosed();
+        const auto snapshot = m_metrics.Snapshot();
+        Logger::Instance().Info(
+            "client disconnected, fd=",
+            fd,
+            ", active_connections=",
+            snapshot.activeConnections
+        );
         it = m_clients.erase(it);
     }
 }
@@ -513,8 +566,10 @@ void TcpServer::CleanupReactor() noexcept
             try {
                 m_poller->Remove(item.first);
             } catch (const std::exception& error) {
-                std::cerr << "failed to remove client, fd=" << item.first << " from poller: "
-                    << error.what() << "\n"; 
+                Logger::Instance().Error(
+                    "failed to remove client, fd=", item.first,
+                    " from poller: ", error.what()
+                );
             }
         }
 
@@ -522,14 +577,14 @@ void TcpServer::CleanupReactor() noexcept
             try {
                 m_poller->Remove(m_listenFd.Get());
             } catch (const std::exception& error) {
-                std::cerr << "failed to remove listen fd: " << error.what() << "\n"; 
+                Logger::Instance().Error("failed to remove listen fd:", error.what());
             }
         }
 
         try {
             m_poller->Remove(m_stopWakup.ReadFd());
         } catch (const std::exception& error) {
-            std::cerr << "failed to remove wakeup fd: " << error.what() << '\n';
+            Logger::Instance().Error("failed to remove wakeup fd: ", error.what());
         }
     }
 
@@ -583,8 +638,11 @@ void TcpServer::SweeperLoop()
         lock.unlock();
 
         const size_t removed = m_store.SweepExpired();
+        m_metrics.OnSweeperRun(removed);
         if (removed > 0) {
-            std::cout << "[sweeper] removed expired keys: " << removed << "\n";
+            Logger::Instance().Debug(
+                "[sweeper] removed expired keys, count=", removed
+            );
         }
         
         lock.lock();
@@ -602,12 +660,24 @@ void TcpServer::UpdateReadBackPressure(Connection& conn)
     if (conn.readPaused) {
         if (pendingBytes <= m_options.writeLowWatermarkBytes) {
             conn.readPaused = false;
+
+            m_metrics.OnReadResumed();
+            Logger::Instance().Debug(
+                "client read resumed, fd=", conn.fd.Get(),
+                ", pending_bytes=", pendingBytes
+            );
         }
         return;
     }
 
     if (pendingBytes >= m_options.writeHighWatermarkBytes) {
         conn.readPaused = true;
+
+        m_metrics.OnReadPaused();
+        Logger::Instance().Debug(
+            "client read paused, fd=", conn.fd.Get(),
+            ", pending_bytes=", pendingBytes
+        );
     }
 }
 
@@ -618,6 +688,97 @@ void TcpServer::RejectOversizedReadBuffer(Connection& conn)
     } else {
         MarkClosed(conn);
     }
+}
+
+// 延迟桶估算百分位
+std::uint64_t TcpServer::EstimatePercentileUpperBoundUs(
+    const ServerMetricsSnapshot &snapshot, double percentile) noexcept
+{
+    if (snapshot.commandLatencyCount == 0U) {
+        return 0U;
+    }
+
+    const double requested = static_cast<double>(snapshot.commandLatencyCount) * percentile;
+    const auto targetRank = static_cast<std::uint64_t>(requested < 1.0 ? 1.0 : requested);
+
+    constexpr std::array<std::uint64_t, 7> UPPER_BOUNDS_US {
+        10U,
+        50U,
+        100U,
+        500U,
+        1000U,
+        5000U,
+        5001U
+    };
+
+    std::uint64_t accumulated = 0;
+    for (std::size_t index = 0; index < snapshot.commandLatencyBuckets.size(); ++index) {
+        accumulated += snapshot.commandLatencyBuckets[index];
+        if (accumulated >= targetRank) {
+            return UPPER_BOUNDS_US[index];
+        }
+    }
+
+    return UPPER_BOUNDS_US.back();
+}
+
+std::string TcpServer::BuildStatsResponse() {
+    const auto storeStats = m_store.Stats();
+    const auto metrics = m_metrics.Snapshot();
+    const double averageLatencyUs = metrics.AverageCommandLatencyMicroseconds();
+    const double maximumLatencyUs = static_cast<double>(metrics.commandLatencyMaximumNanoseconds) / 1000.0;
+    const std::uint64_t p95UpperUs = EstimatePercentileUpperBoundUs(metrics, 0.95);
+    const std::uint64_t p99UpperUs = EstimatePercentileUpperBoundUs(metrics, 0.99);
+
+    std::ostringstream stream;
+
+    stream
+        << std::fixed
+        << std::setprecision(2)
+        << "+keys="
+        << storeStats.keys
+        << ",persistent="
+        << storeStats.persistentKeys
+        << ",expiring="
+        << storeStats.expiringKeys
+        << ",connections_active="
+        << metrics.activeConnections
+        << ",connections_accepted="
+        << metrics.acceptedConnections
+        << ",connections_closed="
+        << metrics.closedConnections
+        << ",bytes_received="
+        << metrics.bytesReceived
+        << ",bytes_sent="
+        << metrics.bytesSent
+        << ",frames_received="
+        << metrics.framesReceived
+        << ",commands="
+        << metrics.commandsProcessed
+        << ",command_errors="
+        << metrics.commandErrors
+        << ",protocol_errors="
+        << metrics.protocolErrors
+        << ",slow_clients="
+        << metrics.slowClientDisconnects
+        << ",read_pauses="
+        << metrics.readPauseTransitions
+        << ",read_resumes="
+        << metrics.readResumeTransitions
+        << ",expired_removed="
+        << metrics.expiredKeysRemoved
+        << ",max_pending_write_bytes="
+        << metrics.maximumPendingWriteBytes
+        << ",latency_avg_us="
+        << averageLatencyUs
+        << ",latency_max_us="
+        << maximumLatencyUs
+        << ",latency_p95_upper_us="
+        << p95UpperUs
+        << ",latency_p99_upper_us="
+        << p99UpperUs;
+
+    return stream.str();
 }
 
 } // namespace tinykv

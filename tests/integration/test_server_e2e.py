@@ -130,6 +130,25 @@ def run_test(server_path: str) -> None:
             ) as client_a:
                 client_a.settimeout(2.0)
 
+                stats = send_command(client_a, "STATS");
+                required_fields = [
+                    "+keys=",
+                    "connections_active=",
+                    "connections_accepted=",
+                    "bytes_received=",
+                    "bytes_sent=",
+                    "commands=",
+                    "protocol_errors=",
+                    "latency_avg_us=",
+                    "latency_p95_upper_us=",
+                ]
+                for field in required_fields:
+                    if field not in stats:
+                        raise AssertionError(
+                            f"missing STATS field {field!r}: "
+                            f"{stats!r}"
+                        )
+
                 # A 连接后保持空闲，验证 B 仍然可以被正常处理。
                 with socket.create_connection(
                     (host, port),
