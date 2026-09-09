@@ -1,5 +1,4 @@
 #include "tinykv/net/poll/poller_factory.h"
-
 #include "tinykv/net/poll/poll_poller.h"
 
 #if defined(__linux__)
@@ -9,8 +8,8 @@
 #include <stdexcept>
 
 namespace tinykv {
-    
-std::unique_ptr<Poller> CreatePoller(PollerBackend backend)
+
+std::unique_ptr<Poller> PollerFactory::CreatePoller(PollerBackend backend)
 {
     switch (backend) {
         case PollerBackend::Auto:
@@ -32,7 +31,7 @@ std::unique_ptr<Poller> CreatePoller(PollerBackend backend)
     throw std::logic_error("unknown backend");
 }
 
-PollerBackend ParsePollerBackend(std::string_view value)
+PollerBackend PollerFactory::ParsePollerBackend(std::string_view value)
 {
     if (value == "auto") {
         return PollerBackend::Auto;
@@ -47,20 +46,6 @@ PollerBackend ParsePollerBackend(std::string_view value)
     }
 
     throw std::invalid_argument("poller backend must be auto, epoll or poll");
-}
-
-const char* PollerBackendName(PollerBackend backend) noexcept
-{
-    switch (backend) {
-        case PollerBackend::Auto:
-            return "auto";
-        case PollerBackend::Poll:
-            return "poll";
-        case PollerBackend::Epoll:
-            return "epoll";
-    }
-
-    return "unknown";
 }
 
 } // namespace tinykv

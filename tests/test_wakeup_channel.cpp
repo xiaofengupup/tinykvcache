@@ -25,7 +25,7 @@ bool ContainsReadableEvent(const std::vector<tinykv::ReadyEvent>& events, int fd
 
 void RunWakeupContract(tinykv::PollerBackend backend)
 {
-    auto poller = tinykv::CreatePoller(backend);
+    auto poller = tinykv::PollerFactory::CreatePoller(backend);
     tinykv::WakeupChannel channel;
     poller->Add(channel.ReadFd(), tinykv::IoEvent::Read);
 
@@ -56,7 +56,7 @@ void TestEpollWakeup()
 
 void TestSignalWakeup()
 {
-    auto poller = tinykv::CreatePoller(tinykv::PollerBackend::Auto);
+    auto poller = tinykv::PollerFactory::CreatePoller(tinykv::PollerBackend::Auto);
     tinykv::WakeupChannel channel;
     poller->Add(channel.ReadFd(), tinykv::IoEvent::Read);
 

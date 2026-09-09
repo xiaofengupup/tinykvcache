@@ -73,7 +73,7 @@ void TcpServer::Run()
         throw std::logic_error("TcpServer can only run once!");
     }
 
-    m_poller = CreatePoller(m_options.pollerBackend);
+    m_poller = PollerFactory::CreatePoller(m_options.pollerBackend);
     m_listenFd = CreateListenSocket(m_host, m_port);
     SetNonBlocking(m_listenFd.Get());
     m_poller->Add(m_listenFd.Get(), IoEvent::Read);

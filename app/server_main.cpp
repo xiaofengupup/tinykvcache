@@ -21,7 +21,7 @@ int main(int argc, char *argv[])
 
         tinykv::TcpServerOptions options;
         if (argc >=4) {
-            options.pollerBackend = tinykv::ParsePollerBackend(argv[3]);
+            options.pollerBackend = tinykv::PollerFactory::ParsePollerBackend(argv[3]);
         }
         if (argc >=5) {
             tinykv::Logger::Instance().SetLevel(tinykv::ParseLogLevel(argv[4]));

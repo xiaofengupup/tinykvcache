@@ -40,7 +40,7 @@ bool ContainsEvent(const std::vector<tinykv::ReadyEvent>& events, int fd, tinykv
 
 void RunReadableContract(tinykv::PollerBackend backend)
 {
-    auto poller = tinykv::CreatePoller(backend);
+    auto poller = tinykv::PollerFactory::CreatePoller(backend);
     auto pipe = CreatePipePair();
     poller->Add(pipe.readFd.Get(), tinykv::IoEvent::Read);
 
@@ -61,7 +61,7 @@ void RunReadableContract(tinykv::PollerBackend backend)
 
 void RunWritableContract(tinykv::PollerBackend backend)
 {
-    auto poller = tinykv::CreatePoller(backend);
+    auto poller = tinykv::PollerFactory::CreatePoller(backend);
     auto pipe = CreatePipePair();
     poller->Add(pipe.writeFd.Get(), tinykv::IoEvent::Write);
 
@@ -71,7 +71,7 @@ void RunWritableContract(tinykv::PollerBackend backend)
 
 void RunRegistrationErrorContract(tinykv::PollerBackend backend)
 {
-    auto poller = tinykv::CreatePoller(backend);
+    auto poller = tinykv::PollerFactory::CreatePoller(backend);
     auto pipe = CreatePipePair();
     poller->Add(pipe.readFd.Get(), tinykv::IoEvent::Read);
 
@@ -109,7 +109,7 @@ void TestEpollBackend()
 #else
     bool thrown = false;
     try {
-        auto poller = tinykv::CreatePoller(tinykv::PollerBackend::Epoll);
+        auto poller = tinykv::PollerFactory::CreatePoller(tinykv::PollerBackend::Epoll);
         (void)poller;
     } catch (const std::invalid_argument&) {
         thrown = true;
@@ -120,7 +120,7 @@ void TestEpollBackend()
 
 void TestAutoBackend()
 {
-    auto poller = tinykv::CreatePoller(tinykv::PollerBackend::Auto);
+    auto poller = tinykv::PollerFactory::CreatePoller(tinykv::PollerBackend::Auto);
 
 #if TINYKV_HAS_EPOLL
     TINYKV_CHECK(std::string_view(poller->Name()) == "epoll");

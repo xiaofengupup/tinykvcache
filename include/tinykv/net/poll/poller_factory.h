@@ -4,9 +4,7 @@
 #pragma once
 
 #include "tinykv/net/poll/poller.h"
-
 #include <memory>
-#include <string_view>
 
 namespace tinykv {
 
@@ -17,18 +15,21 @@ enum class PollerBackend {
 };
 
 /**
- * 创建指定后端
- * 
- * Auto：Linux -> epoll，其它 POSIX 平台 -> poll
+ * Poller 工厂类，简单工厂模式，提供创建 poller 的接口
  */
-std::unique_ptr<Poller> CreatePoller(PollerBackend backend);
+class PollerFactory {
+public:
+    /**
+     * 创建指定后端 poller
+     * 
+     * Auto：Linux -> epoll，其它 POSIX 平台 -> poll
+     */
+    static std::unique_ptr<Poller> CreatePoller(PollerBackend backend);
 
-/**
- * 将命令行字符串解析为后端枚举
- */
-PollerBackend ParsePollerBackend(std::string_view value);
-
-const char* PollerBackendName(PollerBackend backend) noexcept;
-
+    /**
+     * 将命令行字符串解析为后端枚举
+     */
+    static PollerBackend ParsePollerBackend(std::string_view value);
+};
 
 } // namespace tinykv
