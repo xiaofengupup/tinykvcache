@@ -190,13 +190,12 @@ private:
     KVStore  m_store;
     std::unordered_map<int, Connection> m_clients; // key 是 client fd，value 是该连接的状态。
 
+     // TTL 后台清理线程相关
     std::chrono::seconds m_sweepInterval {5};
-    std::atomic_bool m_sweepRunning {false};
-    std::thread m_sweepThread;
-
-    // 用于让 stop_sweeper_thread 能及时唤醒 sweeper_loop。
-    std::mutex m_sweepMutex;
-    std::condition_variable m_sweepCv;
+    bool m_sweeperRunning {false};        // 表示 sweeper 线程是否正在运行
+    std::mutex m_sweeperMutex;            // 保护 m_sweepRunning，并参与 m_sweepCv 等待协议
+    std::condition_variable m_sweepCv;  // 负责及时唤醒 sweeper 线程
+    std::thread m_sweepThread;          // sweeper 后台线程对象
 
     // TCP Server 配置
     TcpServerOptions m_options;

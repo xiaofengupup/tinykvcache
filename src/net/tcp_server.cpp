@@ -601,32 +601,34 @@ void TcpServer::StartSweeperThread()
         return;
     }
 
-    // compare_exchange_strong：C++ 原子操作里用于比较并交换（CAS）的核心函数
-    // 参数1：存放你“期望”原子对象当前拥有的值
-    //       - 如果原子对象的值等于 *expected，则交换为第二个参数，返回 true。
-    //       - 如果不相等，则函数返回 false，并且会把原子对象当前真实的值写回 expected
-    // 参数2：当原子对象的当前值等于 expected 时，要将其原子地替换成的值
-    bool expected = false;
-    if (!m_sweepRunning.compare_exchange_strong(expected, true)) {
-        // 已经启动过了
-        return;
+    {
+        std::lock_guard<std::mutex> lock(m_sweeperMutex);
+        // 除了由 TcpServer::Run() 保证只启动一次，内部也要保证不会重复启动 sweeper 线程
+        if (m_sweeperRunning) {
+            throw std::logic_error("sweeper thread already running");
+        }
+        m_sweeperRunning = true;
     }
 
     try {
         m_sweepThread = std::thread(&TcpServer::SweeperLoop, this);
     } catch (...) {
-        m_sweepRunning.exchange(false);
+        {
+            std::lock_guard<std::mutex> lock(m_sweeperMutex);
+            m_sweeperRunning = false;
+        }
         throw;
     }
 }
 
 void TcpServer::StopSweeperThread()
 {
-    const bool wasRunning = m_sweepRunning.exchange(false); // 原子地把 m_sweepRunning 设置为 false，并返回旧值；
-    if (wasRunning) {
-        m_sweepCv.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(m_sweeperMutex);
+        m_sweeperRunning = false;   
     }
 
+    m_sweepCv.notify_all();
     if (m_sweepThread.joinable()) {
         m_sweepThread.join();
     }
@@ -634,43 +636,40 @@ void TcpServer::StopSweeperThread()
 
 void TcpServer::SweeperLoop()
 {
-    std::unique_lock<std::mutex> lock(m_sweepMutex);
+    std::unique_lock<std::mutex> lock(m_sweeperMutex);
 
-    while (m_sweepRunning) {
+    while (true) {
         // 这里 wait_for 的作用：最多等待 m_sweepInterval，等待期间如果被通知并且谓词返回 true，就提前结束
         //     lock: 要由条件变量暂时释放和重新获取的锁
         //     m_sweepInterval：最长等待时间
-        //     [this] { return !m_sweepRunning.load(); }: 谓词，这里指停止条件
+        //     [this] { return !m_sweeperRunning; }: 谓词，这里指停止条件
         /**
          * 执行过程大致如下：
          * 1. 检查谓词；
-         * 2. 如果谓词为 false，释放 m_sweepMutex
+         * 2. 如果谓词为 false，释放 m_sweeperMutex
          * 3. 当前线程进入等待状态
          * 4. 收到 notify 或者等待超时
-         * 5. 重新获取 m_sweepMutex
+         * 5. 重新获取 m_sweeperMutex
          * 6. 再次检查谓词
          * 7. 返回
          * 
          * 最重要的是：条件变量等待时不会一直占用 mutex，否则其他线程就无法修改共享状态或执行停止逻辑
          */
         const bool shouldStop = m_sweepCv.wait_for(lock, m_sweepInterval, [this] {
-            return !m_sweepRunning.load();
+            return !m_sweeperRunning;
         });
 
         if (shouldStop) {
             break;
         }
 
-        // 不要持有 sweeper_mutex_ 调用 KVStore。
-        // KVStore 内部有自己的 mutex。
+        // 不要持有 m_sweeperMutex 调用 KVStore，KVStore 内部有自己的 mutex
         lock.unlock();
 
         const size_t removed = m_store.SweepExpired();
         m_metrics.OnSweeperRun(removed);
         if (removed > 0) {
-            Logger::Instance().Debug(
-                "[sweeper] removed expired keys, count=", removed
-            );
+            Logger::Instance().Debug("[sweeper] removed expired keys, count=", removed);
         }
         
         lock.lock();
