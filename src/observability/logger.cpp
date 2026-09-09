@@ -64,7 +64,7 @@ void Logger::SetLevel(LogLevel level) noexcept
 
 bool Logger::ShouldLog(LogLevel level) const noexcept
 {
-    return static_cast<int>(level) > m_logLevel.load(std::memory_order_relaxed);
+    return static_cast<int>(level) >= m_logLevel.load(std::memory_order_relaxed);
 }
 
 void Logger::Write(LogLevel level, std::string_view message)
