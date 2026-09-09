@@ -90,53 +90,56 @@ void TcpServer::Run()
             bool stopEventReceived = m_stopRequested.load(std::memory_order_acquire);
             
             // 先处理停止通知，避免同一批事件中继续 accept 新连接
-            for (const ReadyEvent& ready : readyEvents) {
-                if (ready.fd == m_stopWakup.ReadFd()) {
+            for (const ReadyEvent& rEvent : readyEvents) {
+                if (rEvent.fd == m_stopWakup.ReadFd()) {
                     m_stopWakup.Drain();
                     stopEventReceived = true;
+                    // 同一批 readyEvents 里面，同一个 fd 通常只会对应一个就绪事件记录，所以找到后无需继续遍历
+                    break;
                 }
             }
             if (stopEventReceived) {
                 BeginGracefulShutdown();
             }
 
-            for (const ReadyEvent& ready : readyEvents) {
-                if (ready.fd == m_stopWakup.ReadFd()) {
+            for (const ReadyEvent& rEvent : readyEvents) {
+                if (rEvent.fd == m_stopWakup.ReadFd()) {
                     continue;
                 }
-                // 处理 m_listenFd 相关事件
-                if (m_listenFd.Valid() && ready.fd == m_listenFd.Get()) {
-                    if (m_state == ServerState::Running && HasIoEvent(ready.events, IoEvent::Read)) {
+                // 处理 m_listenFd 相关事件：listenFd 可读表示有新客户端连接
+                if (m_listenFd.Valid() && rEvent.fd == m_listenFd.Get()) {
+                    if (m_state == ServerState::Running && HasIoEvent(rEvent.events, IoEvent::Read)) {
                         AcceptNewClients();
                     }
                     continue;
                 }
 
                 // 处理 client 相关事件
-                auto iter = m_clients.find(ready.fd);
+                auto iter = m_clients.find(rEvent.fd);
                 if (iter == m_clients.end()) {
                     continue;
                 }
 
                 Connection& conn = iter->second;
-                if (HasIoEvent(ready.events, IoEvent::Error)) {
+                if (HasIoEvent(rEvent.events, IoEvent::Error)) {
                     MarkClosed(conn);
                     continue;
                 }
-                // Draining 状态下不再读取新请求
-                if (m_state == ServerState::Running && HasIoEvent(ready.events, IoEvent::Read)) {
+
+                if (m_state == ServerState::Running && HasIoEvent(rEvent.events, IoEvent::Read)) {
                     HandleClientRead(conn);
                 }
-                if (!conn.closed && HasIoEvent(ready.events, IoEvent::Write)) {
+                if (!conn.closed && HasIoEvent(rEvent.events, IoEvent::Write)) {
                     HandleClientWrite(conn);
                 }
-                if (!conn.closed && HasIoEvent(ready.events, IoEvent::Hangup)) {
+                if (!conn.closed && HasIoEvent(rEvent.events, IoEvent::Hangup)) {
                     MarkClosed(conn);
                 }
                 if (!conn.closed) {
                     RefreshConnectionInterest(conn);
                 }
             }
+
             CleanupClosedConnections();
             CheckShutdownProgress();
         }
@@ -257,7 +260,6 @@ void TcpServer::AcceptNewClients()
 {
     // 这里采用循环的原因是：
     // 一次 poll() 通知 listen fd 可读时，可能已经有多个客户端在连接队列中，所以要一直 accept()
-
     std::size_t acceptedCount = 0;
     while (acceptedCount < m_options.maxAcceptsPerEvent) {
         const int clientFd = ::accept(m_listenFd.Get(), nullptr, nullptr);
