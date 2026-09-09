@@ -54,7 +54,32 @@ struct TcpServerOptions {
     std::chrono::milliseconds gracefulShutdownTimeout { std::chrono::milliseconds(3000) };
 };
 
-// TcpServer 运行状态
+/**
+ * TcpServer 运行状态
+ * 
+ * Created：构造完成，尚未调用 Run()
+ * Running：运行中
+ * Draining：实现优雅退出的关键状态，进入该状态后：
+ *  - 不再接受新客户端连接
+ *  - 不再读取新的客户端请求
+ *  - 但继续发送已经生成响应、仍在客户端连接写缓冲区的响应数据
+ * Stopped：服务端已经停止
+ * 
+ * 状态转换如下：
+ * Created
+ *    |
+ *    | Run()
+ *    v
+ * Running
+ *    |
+ *    | Stop / SIGINT / SIGTERM
+ *    v
+ * Draining
+ *    |
+ *    | 所有连接排空 writeBuffer 或 shutdown timeout
+ *    v
+ * Stopped
+ */
 enum class ServerState {
     Created,
     Running,
@@ -63,8 +88,7 @@ enum class ServerState {
 };
 
 /**
- * 在第 9 阶段升级为 poll reactor 模型
- * 在第 10 阶段增加后台 sweeper 线程，用于周期清理过期 key
+ * TcpServer 是一个单线程的 Reactor 模型 TCP 服务器（辅助后台清理线程）
  */
 class TcpServer {
 public:
