@@ -54,8 +54,8 @@ std::string CommandExecutor::Execute(KVStore &store, const Command &command)
                 "  EXPIRE <key> <seconds>\n"
                 "  TTL <key>\n"
                 "  STATS\n"
-                "  QUIT\n"
-                "  HELP";
+                "  HELP\n"
+                "  QUIT";
             return helpText;
         }
         default:

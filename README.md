@@ -157,6 +157,7 @@ SET name tinykv
 | `EXPIRE key seconds` | 设置过期时间 | `EXPIRE name 10` |
 | `TTL key` | 查询剩余过期时间 | `TTL name` |
 | `STATS` | 查看存储与服务端运行指标 | `STATS` |
+| `HELP` | 查看命令帮助 ｜ `Supported commands:` |
 | `QUIT` | 请求服务端关闭当前连接 | `QUIT` |
 
 ### 返回约定
