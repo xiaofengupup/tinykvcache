@@ -85,6 +85,18 @@ void WakeupChannel::Notify() noexcept
     const std::uint8_t byte = 1U;
 
     while (true) {
+        /**
+         * ::socketpair() 创建的 socket 是全双工的，读端和写端都可以同时进行。
+         * 这里写入一个字节后，读端就会变为可读，poll/epoll 就会通知事件循环线程，具体流程如下：
+         * 
+         *  writeFd 写入数据
+         *      ↓
+         *  数据进入对端 socket 的接收缓冲区
+         *      ↓
+         *  readFd 对应的接收缓冲区非空
+         *      ↓
+         *  内核认为 readFd 可读
+         */
         const ssize_t written = ::write(m_writeFd.Get(), &byte, sizeof(byte));
         if (written == static_cast<ssize_t>(sizeof(byte))) {
             return;
