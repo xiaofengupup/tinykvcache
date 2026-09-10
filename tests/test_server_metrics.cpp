@@ -1,11 +1,11 @@
 #include "tinykv/observability/server_metrics.h"
-#include "test_utils.h"
 
+#include <gtest/gtest.h>
 #include <chrono>
 
 namespace {
     
-void TestConnectionMetrics()
+TEST(ServerMetrics, ConnectionMetrics)
 {
     tinykv::ServerMetrics metrics;
     metrics.OnConnectionAccepted();
@@ -14,12 +14,12 @@ void TestConnectionMetrics()
 
     const auto snapshot = metrics.Snapshot();
 
-    TINYKV_CHECK(snapshot.acceptedConnections == 2);
-    TINYKV_CHECK(snapshot.closedConnections == 1);
-    TINYKV_CHECK(snapshot.activeConnections == 1);
+    EXPECT_EQ(snapshot.acceptedConnections, 2);
+    EXPECT_EQ(snapshot.closedConnections, 1);
+    EXPECT_EQ(snapshot.activeConnections, 1);
 }
 
-void TestTrafficAndErrorMetrics()
+TEST(ServerMetrics, TrafficAndErrorMetrics)
 {
     tinykv::ServerMetrics metrics;
 
@@ -33,15 +33,15 @@ void TestTrafficAndErrorMetrics()
 
     const auto snapshot = metrics.Snapshot();
 
-    TINYKV_CHECK(snapshot.bytesReceived == 100);
-    TINYKV_CHECK(snapshot.bytesSent == 80);
-    TINYKV_CHECK(snapshot.framesReceived == 3);
-    TINYKV_CHECK(snapshot.commandsProcessed == 1);
-    TINYKV_CHECK(snapshot.commandErrors == 1);
-    TINYKV_CHECK(snapshot.protocolErrors == 1);
+    EXPECT_EQ(snapshot.bytesReceived, 100);
+    EXPECT_EQ(snapshot.bytesSent, 80);
+    EXPECT_EQ(snapshot.framesReceived, 3);
+    EXPECT_EQ(snapshot.commandsProcessed, 1);
+    EXPECT_EQ(snapshot.commandErrors, 1);
+    EXPECT_EQ(snapshot.protocolErrors, 1);
 }
 
-void TestLatencyMetrics()
+TEST(ServerMetrics, LatencyMetrics)
 {
     tinykv::ServerMetrics metrics;
 
@@ -51,15 +51,15 @@ void TestLatencyMetrics()
 
     const auto snapshot = metrics.Snapshot();
 
-    TINYKV_CHECK(snapshot.commandLatencyCount == 3);
-    TINYKV_CHECK(snapshot.commandLatencyMaximumNanoseconds == 2'000'000U);
-    TINYKV_CHECK(snapshot.commandLatencyBuckets[0] == 1);
-    TINYKV_CHECK(snapshot.commandLatencyBuckets[2] == 1);
-    TINYKV_CHECK(snapshot.commandLatencyBuckets[5] == 1);
-    TINYKV_CHECK(snapshot.AverageCommandLatencyMicroseconds() > 0.0);
+    EXPECT_EQ(snapshot.commandLatencyCount, 3);
+    EXPECT_EQ(snapshot.commandLatencyMaximumNanoseconds, 2'000'000U);
+    EXPECT_EQ(snapshot.commandLatencyBuckets[0], 1);
+    EXPECT_EQ(snapshot.commandLatencyBuckets[2], 1);
+    EXPECT_EQ(snapshot.commandLatencyBuckets[5], 1);
+    EXPECT_TRUE(snapshot.AverageCommandLatencyMicroseconds() > 0.0);
 }
 
-void TestMaximumPendingBytes()
+TEST(ServerMetrics, MaximumPendingBytes)
 {
     tinykv::ServerMetrics metrics;
 
@@ -69,18 +69,7 @@ void TestMaximumPendingBytes()
 
     const auto snapshot = metrics.Snapshot();
 
-    TINYKV_CHECK(snapshot.maximumPendingWriteBytes == 200);
+    EXPECT_EQ(snapshot.maximumPendingWriteBytes, 200);
 }
 
 } // namespace
-
-int main()
-{
-    TestConnectionMetrics();
-    TestTrafficAndErrorMetrics();
-    TestLatencyMetrics();
-    TestMaximumPendingBytes();
-
-    std::cout << "server metrics test passed" << std::endl;
-    return 0;
-}

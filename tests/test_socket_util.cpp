@@ -1,7 +1,6 @@
-#include "test_utils.h"
-
 #include "tinykv/net/socket_util.h"
 
+#include <gtest/gtest.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -10,27 +9,18 @@
 
 namespace {
 
-void TestCreateListenSocket()
+TEST(SocketUtilTest, CreateListenSocket)
 {
     auto server = tinykv::CreateListenSocket("127.0.0.1", 0);
-    TINYKV_CHECK(server.Valid());
+    EXPECT_TRUE(server.Valid());
 }
 
-void TestSetNonBlocking()
+TEST(SocketUtilTest, SetNonBlocking)
 {
     auto server = tinykv::CreateListenSocket("127.0.0.1", 0);
-    TINYKV_CHECK(server.Valid());
+    EXPECT_TRUE(server.Valid());
 
     tinykv::SetNonBlocking(server.Get());
 }
 
 } // namespace
-
-int main()
-{
-    TestCreateListenSocket();
-    TestSetNonBlocking();
-
-    std::cout << "socket util tests passed\n";
-    return 0;
-}

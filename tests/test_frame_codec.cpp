@@ -1,7 +1,6 @@
-#include "test_utils.h"
-
 #include "tinykv/core/frame_codec.h"
 
+#include <gtest/gtest.h>
 #include <arpa/inet.h>
 #include <iostream>
 #include <stdexcept>
@@ -11,37 +10,37 @@
 
 namespace {
 
-void TestEncodeHeaderAndPayload()
+TEST(FrameCodecTest, EncodeHeaderAndPayload)
 {
     const std::string payload = "PING";
     const std::string frame = tinykv::FrameCodec::Encode(payload);
 
     // frame 总长度是 4 字节长度头 + payload 长度
-    TINYKV_CHECK(frame.size() == 4 + payload.size());
+    EXPECT_EQ(frame.size(), 4 + payload.size());
 
     // 检查前 4 字节是否正确表示 payload 的长度
     std::uint32_t netLen = 0;
     std::memcpy(&netLen, frame.data(), sizeof(netLen));
 
     const std::uint32_t hostLen = ntohl(netLen);
-    TINYKV_CHECK(hostLen == payload.size());
+    EXPECT_EQ(hostLen, payload.size());
 
     // 检查后面内容是否仍然是原始 payload
-    TINYKV_CHECK(frame.substr(4) == payload);
+    EXPECT_EQ(frame.substr(4), payload);
 }
 
-void TestDecodeSingleCompleteFrame()
+TEST(FrameCodecTest, DecodeSingleCompleteFrame)
 {
     std::string buffer;
     const std::string frame = tinykv::FrameCodec::Encode("PING");
     const auto frames = tinykv::FrameCodec::Decode(buffer, frame.data(), frame.size());
 
-    TINYKV_CHECK(frames.size() == 1);
-    TINYKV_CHECK(frames[0] == "PING");
-    TINYKV_CHECK(buffer.empty());
+    EXPECT_EQ(frames.size(), 1);
+    EXPECT_EQ(frames[0], "PING");
+    EXPECT_TRUE(buffer.empty());
 }
 
-void TestDecodeStickyPackets()
+TEST(FrameCodecTest, DecodeStickyPackets)
 {
     std::string buffer;
     const std::string frame1 = tinykv::FrameCodec::Encode("PING");
@@ -51,13 +50,13 @@ void TestDecodeStickyPackets()
     const std::string joined = frame1 + frame2;
     const auto frames = tinykv::FrameCodec::Decode(buffer, joined.data(), joined.size());
 
-    TINYKV_CHECK(frames.size() == 2);
-    TINYKV_CHECK(frames[0] == "PING");
-    TINYKV_CHECK(frames[1] == "GET name");
-    TINYKV_CHECK(buffer.empty());
+    EXPECT_EQ(frames.size(), 2);
+    EXPECT_EQ(frames[0], "PING");
+    EXPECT_EQ(frames[1], "GET name");
+    EXPECT_TRUE(buffer.empty());
 }
 
-void TestDecodeHalfPacket()
+TEST(FrameCodecTest, DecodeHalfPacket)
 {
     std::string buffer;
     const std::string frame = tinykv::FrameCodec::Encode("SET name xiaofeng");
@@ -69,16 +68,16 @@ void TestDecodeHalfPacket()
 
     auto frames = tinykv::FrameCodec::Decode(buffer, part1.data(), part1.size());
     // 数据还不完整，不能解析出frame
-    TINYKV_CHECK(frames.empty());
-    TINYKV_CHECK(!buffer.empty());
+    EXPECT_TRUE(frames.empty());
+    EXPECT_FALSE(buffer.empty());
 
     frames = tinykv::FrameCodec::Decode(buffer, part2.data(), part2.size());
-    TINYKV_CHECK(frames.size() == 1);
-    TINYKV_CHECK(frames[0] == "SET name xiaofeng");
-    TINYKV_CHECK(buffer.empty());
+    EXPECT_EQ(frames.size(), 1);
+    EXPECT_EQ(frames[0], "SET name xiaofeng");
+    EXPECT_TRUE(buffer.empty());
 }
 
-void TestDecodeByteByByte()
+TEST(FrameCodecTest, DecodeByteByByte)
 {
     std::string buffer;
     const std::string frame = tinykv::FrameCodec::Encode("SET a 1");
@@ -90,12 +89,12 @@ void TestDecodeByteByByte()
         collected.insert(collected.end(), frames.begin(), frames.end());
     }
 
-    TINYKV_CHECK(collected.size() == 1);
-    TINYKV_CHECK(collected[0] == "SET a 1");
-    TINYKV_CHECK(buffer.empty());
+    EXPECT_EQ(collected.size(), 1);
+    EXPECT_EQ(collected[0], "SET a 1");
+    EXPECT_TRUE(buffer.empty());
 }
 
-void TestDecodeCompleteFrameWithPartialTail()
+TEST(FrameCodec, DecodeCompleteFrameWithPartialTail)
 {
     std::string buffer;
 
@@ -107,18 +106,18 @@ void TestDecodeCompleteFrameWithPartialTail()
     const std::string mixed = frame1 + frame2 + frame3.substr(0, 5);
 
     auto frames = tinykv::FrameCodec::Decode(buffer, mixed.data(), mixed.size());
-    TINYKV_CHECK(frames.size() == 2);
-    TINYKV_CHECK(frames[0] == "PING");
-    TINYKV_CHECK(frames[1] == "GET a");
-    TINYKV_CHECK(buffer.size() == 5); // 第三条消息还没收完整，所以应该留在 buffer 里。
+    EXPECT_EQ(frames.size(), 2);
+    EXPECT_EQ(frames[0], "PING");
+    EXPECT_EQ(frames[1], "GET a");
+    EXPECT_EQ(buffer.size(), 5); // 第三条消息还没收完整，所以应该留在 buffer 里。
 
     frames = tinykv::FrameCodec::Decode(buffer, frame3.data() + 5, frame3.size() - 5);
-    TINYKV_CHECK(frames.size() == 1);
-    TINYKV_CHECK(frames[0] == "SET b 2");
-    TINYKV_CHECK(buffer.empty());
+    EXPECT_EQ(frames.size(), 1);
+    EXPECT_EQ(frames[0], "SET b 2");
+    EXPECT_TRUE(buffer.empty());
 }
 
-void TestDecodeEmptyPayload()
+TEST(FrameCodecTest, DecodeEmptyPayload)
 {
     std::string buffer;
     
@@ -127,12 +126,12 @@ void TestDecodeEmptyPayload()
 
     // 协议层允许空 payload
     // 至于空 payload 是否是合法命令，由后续 CommandParser 决定。
-    TINYKV_CHECK(frames.size() == 1);
-    TINYKV_CHECK(frames[0] == "");
-    TINYKV_CHECK(buffer.empty());
+    EXPECT_EQ(frames.size(), 1);
+    EXPECT_EQ(frames[0], "");
+    EXPECT_TRUE(buffer.empty());
 }
 
-void TestEncodeTooLargePayloadShouldThrow()
+TEST(FrameCodecTest, EncodeTooLargePayloadShouldThrow)
 {
     const std::string hugePayload(tinykv::FrameCodec::MAX_FRAME_SIZE + 1, 'x');
 
@@ -143,10 +142,10 @@ void TestEncodeTooLargePayloadShouldThrow()
         thrown = true;
     }
 
-    TINYKV_CHECK(thrown);
+    EXPECT_TRUE(thrown);
 }
 
-void TestDecodeTooLargePayloadShouldThrown()
+TEST(FrameCodecTest, DecodeTooLargePayloadShouldThrow)
 {
     std::string buffer;
 
@@ -164,23 +163,7 @@ void TestDecodeTooLargePayloadShouldThrown()
         thrown = true;
     }
 
-    TINYKV_CHECK(thrown);
+    EXPECT_TRUE(thrown);
 }
 
-}
-
-int main()
-{
-    TestEncodeHeaderAndPayload();
-    TestDecodeSingleCompleteFrame();
-    TestDecodeStickyPackets();
-    TestDecodeHalfPacket();
-    TestDecodeByteByByte();
-    TestDecodeCompleteFrameWithPartialTail();
-    TestDecodeEmptyPayload();
-    TestEncodeTooLargePayloadShouldThrow();
-    TestDecodeTooLargePayloadShouldThrown();
-
-    std::cout << "frame codec tests passed\n";
-    return 0;
-}
+} // namespace

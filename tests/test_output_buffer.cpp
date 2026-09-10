@@ -1,6 +1,6 @@
-#include "test_utils.h"
 #include "tinykv/net/output_buffer.h"
 
+#include <gtest/gtest.h>
 #include <stdexcept>
 #include <string>
 
@@ -11,38 +11,38 @@ std::string PendingData(const tinykv::OutputBuffer& buffer)
     return std::string(buffer.Data(), buffer.Size());
 }
 
-void TestDefaultState()
+TEST(OutputBufferTest, DefaultState)
 {
     tinykv::OutputBuffer buffer;
 
-    TINYKV_CHECK(buffer.Empty());
-    TINYKV_CHECK(buffer.Size() == 0);
+    EXPECT_TRUE(buffer.Empty());
+    EXPECT_EQ(buffer.Size(), 0);
 }
 
-void TestAppend()
+TEST(OutputBufferTest, Append)
 {
     tinykv::OutputBuffer buffer;
 
     buffer.Append("hello");
     buffer.Append(" world");
 
-    TINYKV_CHECK(!buffer.Empty());
-    TINYKV_CHECK(buffer.Size() == 11);
-    TINYKV_CHECK(PendingData(buffer) == "hello world");
+    EXPECT_TRUE(!buffer.Empty());
+    EXPECT_EQ(buffer.Size(), 11);
+    EXPECT_EQ(PendingData(buffer), "hello world");
 }
 
-void TestPartialConsume()
+TEST(OutputBufferTest, PartialConsume)
 {
     tinykv::OutputBuffer buffer;
 
     buffer.Append("abcdef");
     buffer.Consume(2);
 
-    TINYKV_CHECK(buffer.Size() == 4);
-    TINYKV_CHECK(PendingData(buffer) == "cdef");
+    EXPECT_EQ(buffer.Size(), 4);
+    EXPECT_EQ(PendingData(buffer), "cdef");
 }
 
-void TestAppendAfterPartialConsume()
+TEST(OutputBufferTest, AppendAfterPartialConsume)
 {
     tinykv::OutputBuffer buffer;
     
@@ -50,33 +50,33 @@ void TestAppendAfterPartialConsume()
     buffer.Consume(2);
     buffer.Append("gh");
 
-    TINYKV_CHECK(buffer.Size() == 6);
-    TINYKV_CHECK(PendingData(buffer) == "cdefgh");
+    EXPECT_EQ(buffer.Size(), 6);
+    EXPECT_EQ(PendingData(buffer), "cdefgh");
 }
 
-void TestConsumeAll()
+TEST(OutputBufferTest, ConsumeAll)
 {
     tinykv::OutputBuffer buffer;
 
     buffer.Append("abc");
     buffer.Consume(3);
 
-    TINYKV_CHECK(buffer.Empty());
-    TINYKV_CHECK(buffer.Size() == 0);
+    EXPECT_TRUE(buffer.Empty());
+    EXPECT_EQ(buffer.Size(), 0);
 }
 
-void TestClear()
+TEST(OutputBufferTest, Clear)
 {
     tinykv::OutputBuffer buffer;
 
     buffer.Append("hello");
     buffer.Clear();
 
-    TINYKV_CHECK(buffer.Empty());
-    TINYKV_CHECK(buffer.Size() == 0);
+    EXPECT_TRUE(buffer.Empty());
+    EXPECT_EQ(buffer.Size(), 0);
 }
 
-void TestConsumeTooMuchShouldThrow()
+TEST(OutputBufferTest, ConsumeTooMuchShouldThrow)
 {
     tinykv::OutputBuffer buffer;
     buffer.Append("abc");
@@ -88,10 +88,10 @@ void TestConsumeTooMuchShouldThrow()
         thrown = true;
     }
 
-    TINYKV_CHECK(thrown);
+    EXPECT_TRUE(thrown);
 }
 
-void TestRepeatedAppendAndConsume()
+TEST(OutputBufferTest, RepeatedAppendAndConsume)
 {
     tinykv::OutputBuffer buffer;
 
@@ -100,22 +100,7 @@ void TestRepeatedAppendAndConsume()
         buffer.Consume(10);
     }
 
-    TINYKV_CHECK(buffer.Empty());
+    EXPECT_TRUE(buffer.Empty());
 }
 
-}
-
-int main()
-{
-    TestDefaultState();
-    TestAppend();
-    TestPartialConsume();
-    TestAppendAfterPartialConsume();
-    TestConsumeAll();
-    TestClear();
-    TestConsumeTooMuchShouldThrow();
-    TestRepeatedAppendAndConsume();
-
-    std::cout << "output buffer tests passed\n";
-    return 0;
 }
