@@ -67,8 +67,7 @@ void TcpServer::Run()
 
     m_state = ServerState::Running;
     StartSweeperThread();
-    Logger::Instance().Info(
-        "server started, host=", m_host, ", port=", m_port, ", poller=", m_poller->Name());
+    TINYKV_LOG_INFO("server started, host={}, port={}, poller={}", m_host, m_port, m_poller->Name());
 
     try {
         while (m_state != ServerState::Stopped) {
@@ -140,7 +139,7 @@ void TcpServer::Run()
     CleanupReactor();
     m_state = ServerState::Stopped;
 
-    Logger::Instance().Info("server stopped gracefully");
+    TINYKV_LOG_INFO_MSG("server stopped gracefully");
 }
 
 /**
@@ -166,7 +165,7 @@ void TcpServer::BeginGracefulShutdown()
     m_state = ServerState::Draining;
     m_shutdownDeadline = std::chrono::steady_clock::now() + m_options.gracefulShutdownTimeout;
 
-    Logger::Instance().Info("graceful shutdown started, clients size=", m_clients.size());
+    TINYKV_LOG_INFO("graceful shutdown started, clients size={}", m_clients.size());
     
     // 停止接受新连接
     if (m_listenFd.Valid()) {
@@ -215,7 +214,7 @@ void TcpServer::ForceCloseAllConnections()
     const std::size_t connectionCount = m_clients.size();
     m_metrics.AddForcedShutdownConnections(connectionCount);
 
-    Logger::Instance().Warn("graceful shutdown timed out, force closing ", connectionCount, " client(s)");
+    TINYKV_LOG_WARN("graceful shutdown timed out, force closing {} client(s)", connectionCount);
     for (auto& item : m_clients) {
         MarkClosed(item.second);
     }
@@ -286,8 +285,8 @@ void TcpServer::AcceptNewClients()
         ++acceptedCount;
         m_metrics.OnConnectionAccepted();
         const auto snapshot = m_metrics.Snapshot();
-        Logger::Instance().Info(
-            "client connected, fd=", rawFd, ", active_connections=", snapshot.activeConnections
+        TINYKV_LOG_INFO(
+            "client connected, fd={}, active_connections={}", rawFd, snapshot.activeConnections
         );
     }
 }
@@ -335,9 +334,8 @@ void TcpServer::HandleClientRead(Connection &conn)
         payloads = FrameCodec::Decode(conn.readBuffer, temp.data(), static_cast<std::size_t>(received));
     } catch (const std::exception& error) {
         m_metrics.OnProtocolError();
-        Logger::Instance().Warn(
-            "protocol error, fd=", conn.fd.Get(),
-            ", error=", error.what()
+        TINYKV_LOG_WARN(
+            "protocol error, fd={}, error={}", conn.fd.Get(), error.what()
         );
         if (QueueResponse(conn, "-ERR protocol error")) {
             conn.closeAfterWrite = true;
@@ -428,10 +426,8 @@ bool TcpServer::ProcessPayload(Connection &conn, const std::string &payload)
         return false;
     }
 
-    Logger::Instance().Debug(
-        "command processed, fd=", conn.fd.Get(),
-        ", command=", payload,
-        ", response_bytes=", response.size()
+    TINYKV_LOG_DEBUG(
+        "command processed, fd={}, command={}, response_bytes={}", conn.fd.Get(), payload, response.size()
     );
 
     return true;
@@ -452,10 +448,8 @@ bool TcpServer::QueueResponse(Connection& conn, const std::string& response)
 
     if (pendingBytes > hardLimit || frame.size() > hardLimit - pendingBytes) {
         m_metrics.OnSlowClientDisconnected();
-        Logger::Instance().Warn(
-            "close slow client, fd=", conn.fd.Get(),
-            ", pending_bytes=", pendingBytes, 
-            ", new_frame_bytes=", frame.size()
+        TINYKV_LOG_WARN(
+            "close slow client, fd={}, pending_bytes={}, new_frame_bytes={}", conn.fd.Get(), pendingBytes, frame.size()
         );
 
         MarkClosed(conn);
@@ -493,11 +487,8 @@ void TcpServer::CleanupClosedConnections()
         
         m_metrics.OnConnectionClosed();
         const auto snapshot = m_metrics.Snapshot();
-        Logger::Instance().Info(
-            "client disconnected, fd=",
-            fd,
-            ", active_connections=",
-            snapshot.activeConnections
+        TINYKV_LOG_INFO(
+            "client disconnected, fd={}, active_connections={}", fd, snapshot.activeConnections
         );
         it = m_clients.erase(it);
     }
@@ -554,9 +545,8 @@ void TcpServer::CleanupReactor() noexcept
             try {
                 m_poller->Remove(item.first);
             } catch (const std::exception& error) {
-                Logger::Instance().Error(
-                    "failed to remove client, fd=", item.first,
-                    " from poller: ", error.what()
+                TINYKV_LOG_ERROR(
+                    "failed to remove client, fd={}, from poller: {}", item.first, error.what()
                 );
             }
         }
@@ -565,14 +555,14 @@ void TcpServer::CleanupReactor() noexcept
             try {
                 m_poller->Remove(m_listenFd.Get());
             } catch (const std::exception& error) {
-                Logger::Instance().Error("failed to remove listen fd:", error.what());
+                TINYKV_LOG_ERROR("failed to remove listen fd: {}", error.what());
             }
         }
 
         try {
             m_poller->Remove(m_stopWakup.ReadFd());
         } catch (const std::exception& error) {
-            Logger::Instance().Error("failed to remove wakeup fd: ", error.what());
+            TINYKV_LOG_ERROR("failed to remove wakeup fd: {}", error.what());
         }
     }
 
@@ -655,7 +645,7 @@ void TcpServer::SweeperLoop()
         const size_t removed = m_store.SweepExpired();
         m_metrics.OnSweeperRun(removed);
         if (removed > 0) {
-            Logger::Instance().Debug("[sweeper] removed expired keys, count=", removed);
+            TINYKV_LOG_DEBUG("[sweeper] removed expired keys, count={}", removed);
         }
         
         lock.lock();
@@ -675,9 +665,8 @@ void TcpServer::UpdateReadBackPressure(Connection& conn)
             conn.readPaused = false;
 
             m_metrics.OnReadResumed();
-            Logger::Instance().Debug(
-                "client read resumed, fd=", conn.fd.Get(),
-                ", pending_bytes=", pendingBytes
+            TINYKV_LOG_DEBUG(
+                "client read resumed, fd={}, pending_bytes={}", conn.fd.Get(), pendingBytes
             );
         }
         return;
@@ -687,9 +676,8 @@ void TcpServer::UpdateReadBackPressure(Connection& conn)
         conn.readPaused = true;
 
         m_metrics.OnReadPaused();
-        Logger::Instance().Debug(
-            "client read paused, fd=", conn.fd.Get(),
-            ", pending_bytes=", pendingBytes
+        TINYKV_LOG_DEBUG(
+            "client read paused, fd={}, pending_bytes={}", conn.fd.Get(), pendingBytes
         );
     }
 }

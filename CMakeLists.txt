@@ -50,6 +50,30 @@ tinykv_config_warnings(tinykv_warnings)
 add_library(tinykv_sanitizers INTERFACE)
 tinykv_configure_sanitizers(tinykv_sanitizers)
 
+# 配置依赖项
+set(
+    FETCHCONTENT_BASE_DIR
+    "${CMAKE_SOURCE_DIR}/.deps"
+    CACHE PATH
+    "Directory to download dependencies"
+)
+
+include(FetchContent)
+
+# 配置 fmt 库
+set(FMT_TEST OFF CACHE BOOL "" FORCE)
+set(FMT_DOC OFF CACHE BOOL "" FORCE)
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    fmt
+    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+    GIT_TAG 12.2.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(fmt)
+
 # tinykv 核心库
 add_library(tinykv STATIC
     src/core/frame_codec.cpp
@@ -96,6 +120,7 @@ target_link_libraries(tinykv PUBLIC
     tinykv_warnings
     tinykv_sanitizers
     Threads::Threads
+    fmt::fmt
 )
 
 add_executable(tinykv_client
