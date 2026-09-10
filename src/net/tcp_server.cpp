@@ -1,9 +1,10 @@
 #include "tinykv/net/tcp_server.h"
-
 #include "tinykv/core/command_parser.h"
 #include "tinykv/core/command_executor.h"
 #include "tinykv/core/frame_codec.h"
 #include "tinykv/net/socket_util.h"
+#include "tinykv/net/poll/poller_factory.h"
+#include "tinykv/observability/logger.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -12,10 +13,12 @@
 #include <stdexcept>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <poll.h>
 #include <utility>
 #include <chrono>
 #include <thread>
+#include <array>
+#include <iomanip>
+#include <sstream>
 
 namespace tinykv {
 
@@ -34,8 +37,29 @@ bool IsWouldBlockError()
 
 }
 
-TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval)
-    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval) {}
+TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval, TcpServerOptions options)
+    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval), m_options(options)
+{
+    if (m_options.maxReadBufferBytes < 4U) {
+        throw std::invalid_argument("maxReadBufferBytes must be at least 4");
+    }
+
+    if (m_options.writeLowWatermarkBytes > m_options.writeHighWatermarkBytes) {
+        throw std::invalid_argument("write low watermark exceeds high watermark");
+    }
+
+    if (m_options.writeHighWatermarkBytes > m_options.writeHardLimitBytes) {
+        throw std::invalid_argument("write high watermark exceeds hard limit");
+    }
+
+    if (m_options.maxWriteBytesPerEvent == 0U) {
+        throw std::invalid_argument("maxWriteBytesPerEvent must be greater than zero");
+    }
+
+    if (m_options.maxAcceptsPerEvent == 0U) {
+        throw std::invalid_argument("maxAcceptsPerEvent must be greater than zero");
+    }
+}
 
 TcpServer::~TcpServer()
 {
@@ -45,139 +69,199 @@ TcpServer::~TcpServer()
 
 void TcpServer::Run()
 {
-    m_listenFd = CreateListenSocket(m_host, m_port);
-    SetNonBlocking(m_listenFd.Get()); // 核心修改：将 listen fd 设置为非阻塞，这样 accept 不会卡死
-    m_running = true;    
-    StartSweeperThread(); // 启动 TTL 清理线程
-    std::cout << "server listenint on " << m_host << ":" << m_port << "\n";
+    if (m_state != ServerState::Created) {
+        throw std::logic_error("TcpServer can only run once!");
+    }
 
+    m_poller = PollerFactory::CreatePoller(m_options.pollerBackend);
+    m_listenFd = CreateListenSocket(m_host, m_port);
+    SetNonBlocking(m_listenFd.Get());
+    m_poller->Add(m_listenFd.Get(), IoEvent::Read);
+    m_poller->Add(m_stopWakup.ReadFd(), IoEvent::Read);
+
+    m_state = ServerState::Running;
+    StartSweeperThread();
+    Logger::Instance().Info(
+        "server started, host=", m_host, ", port=", m_port, ", poller=", m_poller->Name());
 
     try {
-        while (m_running) {
-            std::vector<pollfd> pollFds;
-            pollFds.reserve(1 + m_clients.size());
+        while (m_state != ServerState::Stopped) {
+            const std::vector<ReadyEvent> readyEvents = m_poller->Wait(ComputeWaitTimeout());
+            bool stopEventReceived = m_stopRequested.load(std::memory_order_acquire);
+            
+            // 先处理停止通知，避免同一批事件中继续 accept 新连接
+            for (const ReadyEvent& rEvent : readyEvents) {
+                if (rEvent.fd == m_stopWakup.ReadFd()) {
+                    m_stopWakup.Drain();
+                    stopEventReceived = true;
+                    // 同一批 readyEvents 里面，同一个 fd 通常只会对应一个就绪事件记录，所以找到后无需继续遍历
+                    break;
+                }
+            }
+            if (stopEventReceived) {
+                BeginGracefulShutdown();
+            }
 
-            // 将 listen fd 加入 poll 关注列表
-            pollfd listenPoll;
-            listenPoll.fd = m_listenFd.Get();
-            listenPoll.events = POLLIN;
-            listenPoll.revents = 0;
-            pollFds.push_back(listenPoll);
-
-            // 将 client fd 加入 poll 关注列表
-            for (auto& item : m_clients) {
-                Connection &conn = item.second;
-                if (conn.closed) {
+            for (const ReadyEvent& rEvent : readyEvents) {
+                if (rEvent.fd == m_stopWakup.ReadFd()) {
+                    continue;
+                }
+                // 处理 m_listenFd 相关事件：listenFd 可读表示有新客户端连接
+                if (m_listenFd.Valid() && rEvent.fd == m_listenFd.Get()) {
+                    if (m_state == ServerState::Running && HasIoEvent(rEvent.events, IoEvent::Read)) {
+                        AcceptNewClients();
+                    }
                     continue;
                 }
 
-                pollfd clientPoll;
-                clientPoll.fd = conn.fd.Get();
-                clientPoll.events = POLLIN;
-                clientPoll.revents = 0;
-                if (!conn.writeBuffer.empty()) {
-                    // 只有当 write_buffer 非空时，才关注 POLLOUT。
-                    // 否则大多数 socket 都会一直可写，导致 poll 频繁返回，浪费 CPU。
-                    clientPoll.events |= POLLOUT;
-                }
-
-                pollFds.push_back(clientPoll);
-            }
-
-
-            const int ret = ::poll(pollFds.data(), pollFds.size(), 1000);
-            if (ret < 0) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                throw std::runtime_error(ErrorMessage("poll failed"));
-            }
-
-            if (ret == 0) {
-                CleanupClosedConnections();
-                continue;
-            }
-
-            // 第 0 个永远是 listen fd
-            if ((pollFds[0].revents & POLLIN) != 0) {
-                AcceptNewClients();
-            }
-
-            // 后续都是 client fd
-            for (std::size_t i = 1; i < pollFds.size(); ++i) {
-                const int fd = pollFds[i].fd;
-                const short revents = pollFds[i].revents;
-
-                if (revents == 0) {
-                    continue;
-                }
-                
-                auto it = m_clients.find(fd);
-                if (it == m_clients.end()) {
+                // 处理 client 相关事件
+                auto iter = m_clients.find(rEvent.fd);
+                if (iter == m_clients.end()) {
                     continue;
                 }
 
-                Connection &conn = it->second;
-                if ((revents & (POLLERR | POLLNVAL)) != 0) {
+                Connection& conn = iter->second;
+                if (HasIoEvent(rEvent.events, IoEvent::Error)) {
                     MarkClosed(conn);
                     continue;
                 }
 
-
-                // 处理读事件
-                if ((revents & POLLIN) != 0) {
+                if (m_state == ServerState::Running && HasIoEvent(rEvent.events, IoEvent::Read)) {
                     HandleClientRead(conn);
                 }
-                if (conn.closed) {
-                    continue;
-                }
-
-                // 处理写事件
-                if ((revents & POLLOUT) != 0) {
+                if (!conn.closed && HasIoEvent(rEvent.events, IoEvent::Write)) {
                     HandleClientWrite(conn);
                 }
-                if (conn.closed) {
-                    continue;
-                }
-
-                // 处理中断
-                if ((revents & POLLHUP) != 0) {
+                if (!conn.closed && HasIoEvent(rEvent.events, IoEvent::Hangup)) {
                     MarkClosed(conn);
+                }
+                if (!conn.closed) {
+                    RefreshConnectionInterest(conn);
                 }
             }
 
             CleanupClosedConnections();
+            CheckShutdownProgress();
         }
-    } catch (...) {
+    } catch (const std::exception&) {
         StopSweeperThread();
-        m_clients.clear();
-        m_listenFd.Reset();
-        m_running = false;
+        CleanupReactor();
+        m_state = ServerState::Stopped;
         throw;
-    }   
-    
-    StopSweeperThread();
-    m_clients.clear();
-    m_listenFd.Reset();
-}
-
-void TcpServer::Stop()
-{
-    m_running = false;
-    m_listenFd.Reset();
-
-    for (auto &item : m_clients) {
-        MarkClosed(item.second);
     }
 
     StopSweeperThread();
+    CleanupReactor();
+    m_state = ServerState::Stopped;
+
+    Logger::Instance().Info("server stopped gracefully");
+}
+
+/**
+ * 只做通知动作，真正的状态修改全部由事件循环线程完成
+ */
+void TcpServer::Stop()
+{
+    m_stopRequested.store(true, std::memory_order_release);
+    m_stopWakup.Notify();
+}
+
+int TcpServer::StopNotificationFd() const noexcept
+{
+    return m_stopWakup.WriteFd();
+}
+
+void TcpServer::BeginGracefulShutdown()
+{
+    if (m_state != ServerState::Running) {
+        return;
+    }
+
+    m_state = ServerState::Draining;
+    m_shutdownDeadline = std::chrono::steady_clock::now() + m_options.gracefulShutdownTimeout;
+
+    Logger::Instance().Info("graceful shutdown started, clients size=", m_clients.size());
+    
+    // 停止接受新连接
+    if (m_listenFd.Valid()) {
+        m_poller->Remove(m_listenFd.Get());
+        m_listenFd.Reset();
+    }
+
+    // 不再读取已有连接的新请求，但允许已经排队的响应继续发送
+    for (auto &item : m_clients) {
+        Connection &conn = item.second;
+        conn.readPaused = true;
+        conn.closeAfterWrite = true;
+        if (conn.writeBuffer.Empty()) {
+            MarkClosed(conn);
+            continue;
+        }
+
+        RefreshConnectionInterest(conn);
+    }
+
+    CleanupClosedConnections();
+    if (m_clients.empty()) {
+        m_state = ServerState::Stopped;
+    }
+}
+
+void TcpServer::CheckShutdownProgress()
+{
+    if (m_state != ServerState::Draining) {
+        return;
+    }
+
+    if (m_clients.empty()) {
+        m_state = ServerState::Stopped;
+        return;
+    }
+
+    if (std::chrono::steady_clock::now() >= m_shutdownDeadline) {
+        ForceCloseAllConnections();
+        m_state = ServerState::Stopped;
+    }
+}
+
+void TcpServer::ForceCloseAllConnections()
+{
+    const std::size_t connectionCount = m_clients.size();
+    m_metrics.AddForcedShutdownConnections(connectionCount);
+
+    Logger::Instance().Warn("graceful shutdown timed out, force closing ", connectionCount, " client(s)");
+    for (auto& item : m_clients) {
+        MarkClosed(item.second);
+    }
+
+    CleanupClosedConnections();
+}
+
+std::chrono::milliseconds TcpServer::ComputeWaitTimeout() const
+{
+    if (m_state != ServerState::Running) {
+        // WakeupChannel 可以主动唤醒，因此正常运行时可以无限等待
+        return std::chrono::milliseconds(-1);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= m_shutdownDeadline) {
+        return std::chrono::milliseconds(0);
+    }
+
+    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(m_shutdownDeadline - now);
+    if (remaining.count() == 0) {
+        remaining = std::chrono::milliseconds(1);
+    }
+    return remaining;
 }
 
 void TcpServer::AcceptNewClients()
 {
     // 这里采用循环的原因是：
     // 一次 poll() 通知 listen fd 可读时，可能已经有多个客户端在连接队列中，所以要一直 accept()
-    while (true) {
+    std::size_t acceptedCount = 0;
+    while (acceptedCount < m_options.maxAcceptsPerEvent) {
         const int clientFd = ::accept(m_listenFd.Get(), nullptr, nullptr);
         if (clientFd < 0) {
             if (errno == EINTR) {
@@ -198,145 +282,353 @@ void TcpServer::AcceptNewClients()
         }
 
         const int rawFd = client.Get();
-        auto result = m_clients.emplace(rawFd, Connection(std::move(client)));
-        if (!result.second) {
+        auto [iter, inserted] = m_clients.emplace(rawFd, Connection(std::move(client)));
+        if (!inserted) {
             throw std::runtime_error("client fd already exists");
         }
-        std::cout << "client connected, fd=" << rawFd << "\n";
+        
+        Connection& conn = iter->second;
+        const IoEvent interests = DesiredEvents(conn);
+        try {
+            m_poller->Add(rawFd, interests);
+            conn.registeredEvents = interests;
+        } catch (...) {
+            m_clients.erase(iter);
+            throw;
+        }
+
+        ++acceptedCount;
+        m_metrics.OnConnectionAccepted();
+        const auto snapshot = m_metrics.Snapshot();
+        Logger::Instance().Info(
+            "client connected, fd=", rawFd, ", active_connections=", snapshot.activeConnections
+        );
     }
 }
 
 void TcpServer::HandleClientRead(Connection &conn)
 {
-    char temp[4096];
-    while (m_running) {
-        const ssize_t n = ::recv(conn.fd.Get(), &temp, sizeof(temp), 0);
-        if (n > 0) {
-            std::vector<std::string> payloads;
-            try {
-                payloads = FrameCodec::Decode(conn.readBuffer, temp, static_cast<std::size_t>(n));
-            } catch (const std::exception&) {
-                AppendResponse(conn, "-ERR protocol error");
-                conn.closeAfterWrite = true;
-                return;
-            }
+    if (conn.closed || conn.readPaused || conn.closeAfterWrite) {
+        return;
+    }
 
-            for (const auto &payload : payloads) {
-                const bool keepAlive = ProcessPayload(conn, payload);
-                if (!keepAlive) {
-                    conn.closeAfterWrite = true;
-                    return;
-                }
-            }
+    if (conn.readBuffer.size() >= m_options.maxReadBufferBytes) {
+        RejectOversizedReadBuffer(conn);
+        return;
+    }
 
-            continue;
-        }
+    std::array<char, 16U * 1024U> temp{};
+    const std::size_t availableBytes = m_options.maxReadBufferBytes - conn.readBuffer.size();
+    const std::size_t readSize = std::min(temp.size(), availableBytes);
 
-        if (n == 0) {
-            // 对端关闭连接。
-            MarkClosed(conn);
-            return;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
+    // 这里只执行一次 recv，是因为当前使用的是level-triggered poll：
+    // socket 内核缓冲区仍然有数据 -> 下一个 poll 仍会报告 POLLIN -> 其他连接也获得一次处理机会
+    ssize_t received = -1;
+    do {
+        received = ::recv(conn.fd.Get(), temp.data(), readSize, 0);
+    } while (received < 0 && errno == EINTR);
+
+    if (received == 0) {
+        MarkClosed(conn);
+        return;
+    }
+    if (received < 0) {
         if (IsWouldBlockError()) {
             return;
         }
 
         MarkClosed(conn);
         return;
+    }
+
+    const std::size_t receivedBytes = static_cast<std::size_t>(received);
+    m_metrics.AddBytesReceived(receivedBytes);
+
+    std::vector<std::string> payloads;
+    try {
+        payloads = FrameCodec::Decode(conn.readBuffer, temp.data(), static_cast<std::size_t>(received));
+    } catch (const std::exception& error) {
+        m_metrics.OnProtocolError();
+        Logger::Instance().Warn(
+            "protocol error, fd=", conn.fd.Get(),
+            ", error=", error.what()
+        );
+        if (QueueResponse(conn, "-ERR protocol error")) {
+            conn.closeAfterWrite = true;
+        }
+        return;
+    }
+    m_metrics.AddFramesReceived(payloads.size());
+
+    for (const auto &payload : payloads) {
+        if (!ProcessPayload(conn, payload)) {
+            return;
+        }
     }
 }
 
 void TcpServer::HandleClientWrite(Connection &conn)
 {
-    while (!conn.writeBuffer.empty()) {
-        const ssize_t n = ::send(conn.fd.Get(), conn.writeBuffer.data(), conn.writeBuffer.size(), 0);
-        if (n > 0) {
-            conn.writeBuffer.erase(0, static_cast<std::size_t>(n));
-            continue;
+    if (conn.closed) {
+        return;
+    }
+
+    if (conn.writeBuffer.Empty()) {
+        UpdateReadBackPressure(conn);
+        if (conn.closeAfterWrite) {
+            MarkClosed(conn);
         }
 
-        if (n == 0) {
-            return;
-        }
-        
-        if (errno == EINTR) {
-            continue;
-        }
-        if (IsWouldBlockError()) {
-            return;
-        }
+        return;
+    }
 
+    const std::size_t bytesToWrite = std::min(conn.writeBuffer.Size(), m_options.maxWriteBytesPerEvent);
+    
+    ssize_t written = -1;
+    do {
+        written = ::send(conn.fd.Get(), conn.writeBuffer.Data(), bytesToWrite, 0);
+    } while (written < 0 && errno == EINTR);
+    
+    if (written > 0) {
+        const std::size_t writtenBytes = static_cast<std::size_t>(written);
+        m_metrics.AddBytesSent(writtenBytes);
+        conn.writeBuffer.Consume(writtenBytes);
+        UpdateReadBackPressure(conn);
+
+        if (conn.writeBuffer.Empty() && conn.closeAfterWrite) {
+            MarkClosed(conn);
+        }
+        return;
+    }
+
+    if (written == 0) {
         MarkClosed(conn);
         return;
     }
 
-    if (conn.writeBuffer.empty() && conn.closeAfterWrite) {
-        MarkClosed(conn);
+    if (IsWouldBlockError()) {
+        return;
     }
+
+    MarkClosed(conn);
 }
 
 bool TcpServer::ProcessPayload(Connection &conn, const std::string &payload)
 {
-    const Command cmd = ParseCommand(payload);
-    const std::string response = CommandExecutor::Execute(m_store, cmd);
-    AppendResponse(conn, response);
+    const auto begin = std::chrono::steady_clock::now();
 
-    return cmd.type != CommandType::Quit; // QUIT 只关闭当前客户端连接，不关闭整个服务端。
+    const Command cmd = ParseCommand(payload);
+    m_metrics.OnCommandProcessed();
+    if (cmd.type == CommandType::Unknown) {
+        m_metrics.OnCommandError();
+    }
+
+    std::string response;
+    if (cmd.type == CommandType::Stats) {
+        response = BuildStatsResponse();
+    } else {
+        response = CommandExecutor::Execute(m_store, cmd);
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    m_metrics.RecordCommandLatency(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed));
+
+    if (!QueueResponse(conn, response)) {
+        return false;
+    }
+
+    if (cmd.type == CommandType::Quit) {
+        conn.closeAfterWrite = true; // 先把 +BYE 写完，再关闭连接。
+        return false;
+    }
+
+    Logger::Instance().Debug(
+        "command processed, fd=", conn.fd.Get(),
+        ", command=", payload,
+        ", response_bytes=", response.size()
+    );
+
+    return true;
 }
 
-void TcpServer::AppendResponse(Connection& conn, const std::string& response)
+bool TcpServer::QueueResponse(Connection& conn, const std::string& response)
 {
-    const std::string frame = FrameCodec::Encode(response);
-    conn.writeBuffer += frame;
+    std::string frame;
+    try {
+        frame = FrameCodec::Encode(response);
+    } catch (const std::exception&) {
+        MarkClosed(conn);
+        return false;
+    }
+
+    const std::size_t pendingBytes = conn.writeBuffer.Size();
+    const std::size_t hardLimit = m_options.writeHardLimitBytes;
+
+    if (pendingBytes > hardLimit || frame.size() > hardLimit - pendingBytes) {
+        m_metrics.OnSlowClientDisconnected();
+        Logger::Instance().Warn(
+            "close slow client, fd=", conn.fd.Get(),
+            ", pending_bytes=", pendingBytes, 
+            ", new_frame_bytes=", frame.size()
+        );
+
+        MarkClosed(conn);
+        return false;
+    }
+
+    conn.writeBuffer.Append(frame);
+    m_metrics.ObservePendingWriteBytes(conn.writeBuffer.Size());
+
+    UpdateReadBackPressure(conn);
+    return true;
 }
 
 void TcpServer::MarkClosed(Connection& conn)
 {
     conn.closed = true;
+    conn.readPaused = false;
     conn.closeAfterWrite = false;
 
     // 连接已经关闭或异常时，未发送数据不再保留。
     conn.readBuffer.clear();
-    conn.writeBuffer.clear();
+    conn.writeBuffer.Clear();
 }
 
 void TcpServer::CleanupClosedConnections()
 {
     for (auto it = m_clients.begin(); it != m_clients.end();) {
-        if (it->second.closed) {
-            std::cout << "client disconnected, fd=" << it->first << "\n";
-            it = m_clients.erase(it);
-        } else {
+        if (!it->second.closed) {
             ++it;
+            continue;
         }
-    } 
+
+        const int fd = it->first;
+        m_poller->Remove(fd);
+        
+        m_metrics.OnConnectionClosed();
+        const auto snapshot = m_metrics.Snapshot();
+        Logger::Instance().Info(
+            "client disconnected, fd=",
+            fd,
+            ", active_connections=",
+            snapshot.activeConnections
+        );
+        it = m_clients.erase(it);
+    }
+}
+
+IoEvent TcpServer::DesiredEvents(const Connection& conn) const noexcept
+{
+    if (conn.closed) {
+        return IoEvent::None;
+    }
+
+    IoEvent interests = IoEvent::None;
+    if (!conn.readPaused && !conn.closeAfterWrite) {
+        interests |= IoEvent::Read;
+    }
+    if (!conn.writeBuffer.Empty()) {
+        interests |= IoEvent::Write;
+    }
+
+    return interests;
+}
+
+void TcpServer::RefreshConnectionInterest(Connection& conn)
+{
+    if (conn.closed) {
+        return;
+    }
+
+    UpdateReadBackPressure(conn);
+    
+    if (conn.closeAfterWrite && conn.writeBuffer.Empty()) {
+        MarkClosed(conn);
+        return;
+    }
+
+    const IoEvent desired = DesiredEvents(conn);
+    if (desired == IoEvent::None) {
+        MarkClosed(conn);
+        return;
+    }
+
+    if (desired == conn.registeredEvents) {
+        return;
+    }
+
+    m_poller->Modity(conn.fd.Get(), desired);
+    conn.registeredEvents = desired;
+}
+
+void TcpServer::CleanupReactor() noexcept
+{
+    if (m_poller != nullptr) {
+        for (const auto& item : m_clients) {
+            try {
+                m_poller->Remove(item.first);
+            } catch (const std::exception& error) {
+                Logger::Instance().Error(
+                    "failed to remove client, fd=", item.first,
+                    " from poller: ", error.what()
+                );
+            }
+        }
+
+        if (m_listenFd.Valid()) {
+            try {
+                m_poller->Remove(m_listenFd.Get());
+            } catch (const std::exception& error) {
+                Logger::Instance().Error("failed to remove listen fd:", error.what());
+            }
+        }
+
+        try {
+            m_poller->Remove(m_stopWakup.ReadFd());
+        } catch (const std::exception& error) {
+            Logger::Instance().Error("failed to remove wakeup fd: ", error.what());
+        }
+    }
+
+    m_clients.clear();
+    m_listenFd.Reset();
+    m_poller.reset();
 }
 
 void TcpServer::StartSweeperThread()
 {
-    if (m_sweepInterval.count() < 0) {
+    if (m_sweepInterval.count() <= 0) {
         return;
     }
 
-    bool expected = false;
-    if (!m_sweepRunning.compare_exchange_strong(expected, true)) {
-        // 已经启动过了
-        return;
+    {
+        std::lock_guard<std::mutex> lock(m_sweeperMutex);
+        // 除了由 TcpServer::Run() 保证只启动一次，内部也要保证不会重复启动 sweeper 线程
+        if (m_sweeperRunning) {
+            throw std::logic_error("sweeper thread already running");
+        }
+        m_sweeperRunning = true;
     }
 
-    m_sweepThread = std::thread(&TcpServer::SweeperLoop, this);
+    try {
+        m_sweepThread = std::thread(&TcpServer::SweeperLoop, this);
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(m_sweeperMutex);
+            m_sweeperRunning = false;
+        }
+        throw;
+    }
 }
 
 void TcpServer::StopSweeperThread()
 {
-    const bool wasRunning = m_sweepRunning.exchange(false);
-    if (wasRunning) {
-        m_sweepCv.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(m_sweeperMutex);
+        m_sweeperRunning = false;   
     }
 
+    m_sweepCv.notify_all();
     if (m_sweepThread.joinable()) {
         m_sweepThread.join();
     }
@@ -344,28 +636,176 @@ void TcpServer::StopSweeperThread()
 
 void TcpServer::SweeperLoop()
 {
-    std::unique_lock<std::mutex> lock(m_sweepMutex);
+    std::unique_lock<std::mutex> lock(m_sweeperMutex);
 
-    while (m_sweepRunning) {
+    while (true) {
+        // 这里 wait_for 的作用：最多等待 m_sweepInterval，等待期间如果被通知并且谓词返回 true，就提前结束
+        //     lock: 要由条件变量暂时释放和重新获取的锁
+        //     m_sweepInterval：最长等待时间
+        //     [this] { return !m_sweeperRunning; }: 谓词，这里指停止条件
+        /**
+         * 执行过程大致如下：
+         * 1. 检查谓词；
+         * 2. 如果谓词为 false，释放 m_sweeperMutex
+         * 3. 当前线程进入等待状态
+         * 4. 收到 notify 或者等待超时
+         * 5. 重新获取 m_sweeperMutex
+         * 6. 再次检查谓词
+         * 7. 返回
+         * 
+         * 最重要的是：条件变量等待时不会一直占用 mutex，否则其他线程就无法修改共享状态或执行停止逻辑
+         */
         const bool shouldStop = m_sweepCv.wait_for(lock, m_sweepInterval, [this] {
-            return !m_sweepRunning.load();
+            return !m_sweeperRunning;
         });
 
         if (shouldStop) {
             break;
         }
 
-        // 不要持有 sweeper_mutex_ 调用 KVStore。
-        // KVStore 内部有自己的 mutex。
+        // 不要持有 m_sweeperMutex 调用 KVStore，KVStore 内部有自己的 mutex
         lock.unlock();
 
         const size_t removed = m_store.SweepExpired();
+        m_metrics.OnSweeperRun(removed);
         if (removed > 0) {
-            std::cout << "[sweeper] removed expired keys: " << removed << "\n";
+            Logger::Instance().Debug("[sweeper] removed expired keys, count=", removed);
         }
         
         lock.lock();
     }
+}
+
+void TcpServer::UpdateReadBackPressure(Connection& conn)
+{
+    if (conn.closeAfterWrite || conn.closed) {
+        return;
+    }
+
+    const std::size_t pendingBytes = conn.writeBuffer.Size();
+
+    if (conn.readPaused) {
+        if (pendingBytes <= m_options.writeLowWatermarkBytes) {
+            conn.readPaused = false;
+
+            m_metrics.OnReadResumed();
+            Logger::Instance().Debug(
+                "client read resumed, fd=", conn.fd.Get(),
+                ", pending_bytes=", pendingBytes
+            );
+        }
+        return;
+    }
+
+    if (pendingBytes >= m_options.writeHighWatermarkBytes) {
+        conn.readPaused = true;
+
+        m_metrics.OnReadPaused();
+        Logger::Instance().Debug(
+            "client read paused, fd=", conn.fd.Get(),
+            ", pending_bytes=", pendingBytes
+        );
+    }
+}
+
+void TcpServer::RejectOversizedReadBuffer(Connection& conn)
+{
+    if (QueueResponse(conn, "-ERR request buffer too large")) {
+        conn.closeAfterWrite = true;
+    } else {
+        MarkClosed(conn);
+    }
+}
+
+// 延迟桶估算百分位
+std::uint64_t TcpServer::EstimatePercentileUpperBoundUs(
+    const ServerMetricsSnapshot &snapshot, double percentile) noexcept
+{
+    if (snapshot.commandLatencyCount == 0U) {
+        return 0U;
+    }
+
+    const double requested = static_cast<double>(snapshot.commandLatencyCount) * percentile;
+    const auto targetRank = static_cast<std::uint64_t>(requested < 1.0 ? 1.0 : requested);
+
+    constexpr std::array<std::uint64_t, 7> UPPER_BOUNDS_US {
+        10U,
+        50U,
+        100U,
+        500U,
+        1000U,
+        5000U,
+        5001U
+    };
+
+    std::uint64_t accumulated = 0;
+    for (std::size_t index = 0; index < snapshot.commandLatencyBuckets.size(); ++index) {
+        accumulated += snapshot.commandLatencyBuckets[index];
+        if (accumulated >= targetRank) {
+            return UPPER_BOUNDS_US[index];
+        }
+    }
+
+    return UPPER_BOUNDS_US.back();
+}
+
+std::string TcpServer::BuildStatsResponse() {
+    const auto storeStats = m_store.Stats();
+    const auto metrics = m_metrics.Snapshot();
+    const double averageLatencyUs = metrics.AverageCommandLatencyMicroseconds();
+    const double maximumLatencyUs = static_cast<double>(metrics.commandLatencyMaximumNanoseconds) / 1000.0;
+    const std::uint64_t p95UpperUs = EstimatePercentileUpperBoundUs(metrics, 0.95);
+    const std::uint64_t p99UpperUs = EstimatePercentileUpperBoundUs(metrics, 0.99);
+
+    std::ostringstream stream;
+
+    stream
+        << std::fixed
+        << std::setprecision(2)
+        << "+keys="
+        << storeStats.keys
+        << ",persistent="
+        << storeStats.persistentKeys
+        << ",expiring="
+        << storeStats.expiringKeys
+        << ",connections_active="
+        << metrics.activeConnections
+        << ",connections_accepted="
+        << metrics.acceptedConnections
+        << ",connections_closed="
+        << metrics.closedConnections
+        << ",bytes_received="
+        << metrics.bytesReceived
+        << ",bytes_sent="
+        << metrics.bytesSent
+        << ",frames_received="
+        << metrics.framesReceived
+        << ",commands="
+        << metrics.commandsProcessed
+        << ",command_errors="
+        << metrics.commandErrors
+        << ",protocol_errors="
+        << metrics.protocolErrors
+        << ",slow_clients="
+        << metrics.slowClientDisconnects
+        << ",read_pauses="
+        << metrics.readPauseTransitions
+        << ",read_resumes="
+        << metrics.readResumeTransitions
+        << ",expired_removed="
+        << metrics.expiredKeysRemoved
+        << ",max_pending_write_bytes="
+        << metrics.maximumPendingWriteBytes
+        << ",latency_avg_us="
+        << averageLatencyUs
+        << ",latency_max_us="
+        << maximumLatencyUs
+        << ",latency_p95_upper_us="
+        << p95UpperUs
+        << ",latency_p99_upper_us="
+        << p99UpperUs;
+
+    return stream.str();
 }
 
 } // namespace tinykv

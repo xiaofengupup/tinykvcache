@@ -1,9 +1,10 @@
-#include <cassert>
+#include "test_utils.h"
+
 #include <iostream>
 
 int main()
 {
-    assert(1 + 1 == 2);
+    TINYKV_CHECK(1 + 1 == 2);
 
     std::cout << "smoke test passed" << std::endl;
     return 0;

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc-release
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            install: ""
+            cmake_flags: ""
+
+          - name: linux-clang-asan-ubsan
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            build_type: RelWithDebInfo
+            install: >-
+              sudo apt-get update &&
+              sudo apt-get install -y clang
+            cmake_flags: >-
+              -DTINYKV_ENABLE_ASAN=ON
+              -DTINYKV_ENABLE_UBSAN=ON
+
+          - name: linux-clang-tsan
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            build_type: RelWithDebInfo
+            install: >-
+              sudo apt-get update &&
+              sudo apt-get install -y clang
+            cmake_flags: >-
+              -DTINYKV_ENABLE_TSAN=ON
+
+          - name: macos-appleclang-debug
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+            build_type: Debug
+            install: ""
+            cmake_flags: ""
+
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+      ASAN_OPTIONS: halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      TSAN_OPTIONS: halt_on_error=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install compiler
+        if: matrix.install != ''
+        run: ${{ matrix.install }}
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DTINYKV_BUILD_TESTS=ON
+          -DTINYKV_BUILD_INTEGRATION_TESTS=ON
+          -DTINYKV_WARNINGS_AS_ERRORS=ON
+          ${{ matrix.cmake_flags }}
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: >
+          ctest
+          --test-dir build
+          --output-on-failure
+          --timeout 30

@@ -159,6 +159,7 @@ Command ParseCommand(const std::string &line)
     if (op == "PING")  return FillBasicCmd(CommandType::Ping, 1)  ? cmd : MakeUnknow(line);
     if (op == "STATS") return FillBasicCmd(CommandType::Stats, 1) ? cmd : MakeUnknow(line);
     if (op == "QUIT")  return FillBasicCmd(CommandType::Quit, 1)  ? cmd : MakeUnknow(line);
+    if (op == "HELP")  return FillBasicCmd(CommandType::Help, 1)  ? cmd : MakeUnknow(line);
 
     // 2.单 Key 命令
     if (op == "GET") return FillBasicCmd(CommandType::Get, 2) ? cmd : MakeUnknow(line);

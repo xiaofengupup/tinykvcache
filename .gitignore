@@ -2,7 +2,7 @@
 build/
 cmake-build-*/
 out/
-build-release/
+build-*/
 
 # Object files ---- 不把 中间编译产物 提交到 git
 *.o

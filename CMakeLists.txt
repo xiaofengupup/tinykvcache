@@ -5,6 +5,22 @@ project(TinyKVCache
     DESCRIPTION "A tiny C++17 TCP key-value cache server"
     LANGUAGES CXX)
 
+# 生成 compile_commands.json，方便 clangd、clang-tidy 和 IDE 使用。
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(TINYKV_WARNINGS_AS_ERRORS "将编译告警视为错误" ON)
+option(TINYKV_ENABLE_ASAN "启用 AddressSanitizer" OFF)
+option(TINYKV_ENABLE_UBSAN "启用 UndefinedBehaviorSanitizer" OFF)
+option(TINYKV_ENABLE_TSAN "启用 ThreadSanitizer" OFF)
+option(TINYKV_BUILD_INTEGRATION_TESTS "构建并运行端到端集成测试" ON)
+
+list(APPEND CMAKE_MODULE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
+)
+
+include(compiler_warnings)
+include(sanitizers)
+
 find_package(Threads REQUIRED)
 
 # 使用 C++ 17
@@ -26,13 +42,13 @@ add_library(tinykv_options INTERFACE)
 target_compile_features(tinykv_options INTERFACE cxx_std_17)
 if (MSVC)
     target_compile_options(tinykv_options INTERFACE /W4)
-else()
-    target_compile_options(tinykv_options INTERFACE
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
 endif()
+
+add_library(tinykv_warnings INTERFACE)
+tinykv_config_warnings(tinykv_warnings)
+
+add_library(tinykv_sanitizers INTERFACE)
+tinykv_configure_sanitizers(tinykv_sanitizers)
 
 # tinykv 核心库
 add_library(tinykv STATIC
@@ -44,12 +60,39 @@ add_library(tinykv STATIC
     src/net/scoped_fd.cpp
     src/net/socket_util.cpp
     src/net/tcp_server.cpp
+    src/net/output_buffer.cpp
+
+    src/net/poll/poller_factory.cpp
+    src/net/poll/poller_common.cpp
+    src/net/poll/poll_poller.cpp
+
+    src/net/wakeup/wakeup_channel.cpp
+    src/net/wakeup/termination_signal_handler.cpp
+
+    src/observability/logger.cpp
+    src/observability/server_metrics.cpp
 )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(tinykv PRIVATE
+        src/net/poll/epoll_poller.cpp
+    )
+    target_compile_definitions(tinykv PUBLIC
+        TINYKV_HAS_EPOLL=1
+    )
+else()
+    target_compile_definitions(tinykv PUBLIC
+        TINYKV_HAS_EPOLL=0
+    )
+endif()
+
 target_include_directories(tinykv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(tinykv PUBLIC 
     tinykv_options
+    tinykv_warnings
+    tinykv_sanitizers
     Threads::Threads
 )
 
@@ -71,12 +114,17 @@ target_link_libraries(tinykv_server PRIVATE
 if (TINYKV_BUILD_TESTS)
     enable_testing()
 
+    add_library(tinykv_test_options INTERFACE)
+    target_include_directories(tinykv_test_options INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+
     # 冒烟测试
     add_executable(test_smoke
         tests/test_smoke.cpp
     )
     target_link_libraries(test_smoke PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME smoke COMMAND test_smoke)
 
@@ -85,7 +133,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_frame_codec.cpp
     )
     target_link_libraries(test_frame_codec PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME frame_codec COMMAND test_frame_codec)
 
@@ -94,7 +142,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_command_parser.cpp
     )
     target_link_libraries(test_command_parser PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME command_parser COMMAND test_command_parser)
 
@@ -103,7 +151,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_kv_store.cpp
     )
     target_link_libraries(test_kv_store PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME kv_store COMMAND test_kv_store)
 
@@ -112,7 +160,7 @@ if (TINYKV_BUILD_TESTS)
         tests/test_scoped_fd.cpp
     )
     target_link_libraries(test_scoped_fd PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME scoped_fd COMMAND test_scoped_fd)
 
@@ -121,17 +169,131 @@ if (TINYKV_BUILD_TESTS)
         tests/test_socket_util.cpp
     )
     target_link_libraries(test_socket_util PRIVATE
-        tinykv
+        tinykv tinykv_test_options
     )
     add_test(NAME socket_util COMMAND test_socket_util)
 
+    # 测试命令执行器
     add_executable(test_command_executor
         tests/test_command_executor.cpp
     )
-
     target_link_libraries(test_command_executor PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME command_executor COMMAND test_command_executor)
+
+    # 测试 OutputBuffer
+    add_executable(test_output_buffer
+        tests/test_output_buffer.cpp
+    )
+    target_link_libraries(test_output_buffer PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME output_buffer COMMAND test_output_buffer)
+
+    # 测试 Poller
+    add_executable(test_poller
+        tests/test_poller.cpp
+    )
+    target_link_libraries(test_poller PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME poller COMMAND test_poller)
+
+    # 测试 wakeup channel
+    add_executable(test_wakeup_channel
+        tests/test_wakeup_channel.cpp
+    )
+    target_link_libraries(test_wakeup_channel PRIVATE
+        tinykv tinykv_test_options
+    )
+    add_test(NAME wakeup_channel COMMAND test_wakeup_channel)
+
+    # 测试 server_metrics
+    add_executable(test_server_metrics
+        tests/test_server_metrics.cpp
+    )
+    target_link_libraries(test_server_metrics PRIVATE
         tinykv
+        tinykv_test_options
+    )
+    add_test(NAME server_metrics COMMAND test_server_metrics)
+
+    set_tests_properties(
+        smoke
+        frame_codec
+        command_parser
+        command_executor
+        kv_store
+        scoped_fd
+        socket_util
+        output_buffer
+        poller
+        wakeup_channel
+        server_metrics
+        PROPERTIES
+            LABELS "unit"
+            TIMEOUT 10
+    )
+endif()
+
+# 集成测试
+if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
+    find_package(Python3
+        COMPONENTS Interpreter
+        REQUIRED
     )
 
-    add_test(NAME command_executor COMMAND test_command_executor)
+    add_test(
+        NAME server_e2e
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_server_e2e.py
+            --server
+            $<TARGET_FILE:tinykv_server>
+    )
+    set_tests_properties(
+        server_e2e
+        PROPERTIES
+            LABELS "integration"
+            TIMEOUT 20
+    )
+
+    add_test(
+        NAME graceful_shutdown
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
+            --server
+            $<TARGET_FILE:tinykv_server>
+            --backend
+            auto
+    )
+
+    set_tests_properties(
+        graceful_shutdown
+        PROPERTIES
+            LABELS "integration"
+            TIMEOUT 15
+    )
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(
+            NAME graceful_shutdown_epoll
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
+                --server
+                $<TARGET_FILE:tinykv_server>
+                --backend
+                epoll
+        )
+
+        set_tests_properties(
+            graceful_shutdown_epoll
+            PROPERTIES
+                LABELS "integration"
+                TIMEOUT 15
+        )
+    endif()
 endif()

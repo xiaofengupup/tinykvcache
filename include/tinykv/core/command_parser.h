@@ -21,6 +21,7 @@ enum class CommandType {
     Ttl,
     Stats,
     Quit,
+    Help,
     Unknown
 };
 

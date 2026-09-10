@@ -18,7 +18,8 @@ import socket
 import struct
 import threading
 import time
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 
 
 def encode_frame(payload: str) -> bytes:
@@ -52,12 +53,36 @@ def send_command(sock: socket.socket, command: str) -> str:
     sock.sendall(encode_frame(command))
     return recv_frame(sock)
 
+def timed_command(sock: socket.socket, command_text: str) -> tuple[str, float]:
+    begin_ns = time.perf_counter_ns()
+    response = send_command(sock, command_text)
+    elapsed_ms = (time.perf_counter_ns() - begin_ns) / 1_000_000.0
+
+    return response, elapsed_ms
+
+def percentile(values: list[float], ratio: float,) -> float:
+    if not values:
+        return 0.0
+
+    ordered = sorted(values)
+    position = ratio * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1,)
+    fraction = position - lower
+
+    return (
+        ordered[lower]
+        * (1.0 - fraction)
+        + ordered[upper]
+        * fraction
+    )
 
 @dataclass
 class WorkerResult:
     requests: int = 0
     errors: int = 0
     elapsed: float = 0.0
+    latencies_ms: list[float] = field(default_factory=list)
 
 
 def worker(
@@ -86,19 +111,23 @@ def worker(
                 #   PING 用于最小请求；
                 #   SET/GET 用于验证 KV 路径；
                 #   这里每轮计 3 个请求。
-                resp = send_command(sock, "PING")
+                resp, latency_ms = timed_command(sock, "PING")
+                result.latencies_ms.append(latency_ms)
                 if resp != "+PONG":
                     result.errors += 1
+                result.requests += 1
 
-                resp = send_command(sock, f"SET {key} {value}")
+                resp, latency_ms = timed_command(sock, f"SET {key} {value}")
+                result.latencies_ms.append(latency_ms)
                 if resp != "+OK":
                     result.errors += 1
+                result.requests += 1
 
-                resp = send_command(sock, f"GET {key}")
+                resp, latency_ms = timed_command(sock, f"GET {key}")
+                result.latencies_ms.append(latency_ms)
                 if resp != "$" + value:
                     result.errors += 1
-
-                result.requests += 3
+                result.requests += 1
 
             send_command(sock, "QUIT")
 
@@ -119,6 +148,7 @@ def main() -> int:
     parser.add_argument("--connections", type=int, default=10)
     parser.add_argument("--requests", type=int, default=1000)
     parser.add_argument("--value-size", type=int, default=32)
+    parser.add_argument("--output-json", default="",)
 
     args = parser.parse_args()
 
@@ -170,6 +200,15 @@ def main() -> int:
         else 0.0
     )
 
+    all_latencies_ms = []
+    for result in results:
+        all_latencies_ms.extend(result.latencies_ms)
+
+    p50_ms = percentile(all_latencies_ms, 0.50,)
+    p95_ms = percentile(all_latencies_ms, 0.95,)
+    p99_ms = percentile(all_latencies_ms, 0.99,)
+    max_ms = (max(all_latencies_ms) if all_latencies_ms else 0.0)
+
     print()
     print("benchmark result")
     print("----------------")
@@ -178,6 +217,31 @@ def main() -> int:
     print(f"elapsed_sec    : {global_elapsed:.3f}")
     print(f"qps            : {qps:.2f}")
     print(f"avg_latency_ms : {avg_latency_ms:.3f}")
+    print(f"latency_p50_ms  : {p50_ms:.3f}")
+    print(f"latency_p95_ms  : {p95_ms:.3f}")
+    print(f"latency_p99_ms  : {p99_ms:.3f}")
+    print(f"latency_max_ms  : {max_ms:.3f}")
+
+    report = {
+        "host": args.host,
+        "port": args.port,
+        "connections": args.connections,
+        "requests_per_connection": args.requests,
+        "value_size": args.value_size,
+        "total_requests": total_requests,
+        "total_errors": total_errors,
+        "elapsed_seconds": global_elapsed,
+        "qps": qps,
+        "latency_average_ms": avg_latency_ms,
+        "latency_p50_ms": p50_ms,
+        "latency_p95_ms": p95_ms,
+        "latency_p99_ms": p99_ms,
+        "latency_max_ms": max_ms,
+    }
+
+    if args.output_json:
+        with open(args.output_json, "w", encoding="utf-8") as output_file:
+            json.dump(report, output_file, ensure_ascii=False, indent=2)
 
     return 0 if total_errors == 0 else 1
 

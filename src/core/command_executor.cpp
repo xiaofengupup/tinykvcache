@@ -44,6 +44,20 @@ std::string CommandExecutor::Execute(KVStore &store, const Command &command)
         }
         case CommandType::Quit:
             return "+BYE";
+        case CommandType::Help: {
+            std::string helpText =
+                "Supported commands:\n"
+                "  PING\n"
+                "  SET <key> <value>\n"
+                "  GET <key>\n"
+                "  DEL <key>\n"
+                "  EXPIRE <key> <seconds>\n"
+                "  TTL <key>\n"
+                "  STATS\n"
+                "  HELP\n"
+                "  QUIT";
+            return helpText;
+        }
         default:
             return "-ERR unknown command";
     }
