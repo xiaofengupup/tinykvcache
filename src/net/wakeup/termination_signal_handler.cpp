@@ -1,4 +1,5 @@
 #include "tinykv/net/wakeup/termination_signal_handler.h"
+#include "tinykv/common/posix_error.h"
 
 #include <cerrno>
 #include <csignal>
@@ -14,11 +15,6 @@ namespace {
 
 // 信号处理器与普通程序共享的数据应尽量简单，sig_atomic_t 适合这种最小状态交换
 volatile sig_atomic_t G_NOTIFY_FD = -1;
-
-std::string ErrnoMessage(const char* operation)
-{
-    return std::string(operation) + ": " + std::strerror(errno);
-}
 
 void HandleTerminationSignal(int signalNumber) noexcept
 {
@@ -44,7 +40,7 @@ struct sigaction MakeTerminationAction()
     // 将 sa_mask（信号掩码）初始化为空集
     // 信号掩码的作用：在执行信号处理函数期间，sa_mask 中指定的信号会被阻塞。
     if (sigemptyset(&action.sa_mask) < 0) {
-        throw std::runtime_error(ErrnoMessage("sigemptyset failed"));
+        throw std::runtime_error(ErrorMessage("sigemptyset failed"));
     }
 
     return action;
@@ -57,7 +53,7 @@ struct sigaction MakeIgnoreAction()
     action.sa_flags = 0;
 
     if (sigemptyset(&action.sa_mask) < 0) {
-        throw std::runtime_error(ErrnoMessage("sigemptyset failed"));
+        throw std::runtime_error(ErrorMessage("sigemptyset failed"));
     }
 
     return action;
@@ -82,13 +78,13 @@ TerminationSignalHandler::TerminationSignalHandler(int notifyFd)
     // int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
     if (::sigaction(SIGINT, &terminationAction, &m_previousSigint) < 0) {
         G_NOTIFY_FD = -1;
-        throw std::runtime_error(ErrnoMessage("sigaction SIGINT failed"));
+        throw std::runtime_error(ErrorMessage("sigaction SIGINT failed"));
     }
 
     if (::sigaction(SIGTERM, &terminationAction, &m_previousSigterm) < 0) {
         (void)::sigaction(SIGINT, &m_previousSigint, nullptr);
         G_NOTIFY_FD = -1;
-        throw std::runtime_error(ErrnoMessage("sigaction SIGTERM failed"));
+        throw std::runtime_error(ErrorMessage("sigaction SIGTERM failed"));
     }
 
     // 避免向已经关闭的 socket 发送数据时，SIGPIPE 直接终止整个服务进程。
@@ -96,7 +92,7 @@ TerminationSignalHandler::TerminationSignalHandler(int notifyFd)
         (void)::sigaction(SIGINT, &m_previousSigint, nullptr);
         (void)::sigaction(SIGTERM, &m_previousSigterm, nullptr);
         G_NOTIFY_FD = -1;
-        throw std::runtime_error(ErrnoMessage("sigaction SIGTERM failed"));
+        throw std::runtime_error(ErrorMessage("sigaction SIGTERM failed"));
     }
 
     m_installed = true;

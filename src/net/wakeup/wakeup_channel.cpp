@@ -1,5 +1,6 @@
 #include "tinykv/net/wakeup/wakeup_channel.h"
 #include "tinykv/net/socket_util.h"
+#include "tinykv/common/posix_error.h"
 
 #include <stdexcept>
 #include <string>
@@ -17,11 +18,6 @@ namespace tinykv {
 
 namespace {
 
-std::string ErrnoMessage(const char* operation)
-{
-    return std::string(operation) + ": " + std::strerror(errno);
-}
-
 /**
  * 给文件描述符 fd 设置 close-on-exec 标志，使当前进程执行 exec 系列函数启动新程序时，内核自动关闭这个 fd
  * 
@@ -38,11 +34,11 @@ void SetCloseOnExec(int fd)
 {
     const int flags = ::fcntl(fd, F_GETFD, 0);
     if (flags < 0) {
-        throw std::runtime_error(ErrnoMessage("fcntl F_GETFD failed"));
+        throw std::runtime_error(ErrorMessage("fcntl F_GETFD failed"));
     }
 
     if (::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
-        throw std::runtime_error(ErrnoMessage("fcntl F_SETFD failed"));
+        throw std::runtime_error(ErrorMessage("fcntl F_SETFD failed"));
     }
 }
 
@@ -54,7 +50,7 @@ WakeupChannel::WakeupChannel()
     // 这一机制可以同时被 poll 和 epoll 监听
     int rawFds[2] = {-1, -1};
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, rawFds) < 0) {
-        throw std::runtime_error(ErrnoMessage("socketpair failed"));
+        throw std::runtime_error(ErrorMessage("socketpair failed"));
     }
 
     ScopedFd readFd(rawFds[0]);
@@ -137,7 +133,7 @@ void WakeupChannel::Drain()
             return;
         }
 
-        throw std::runtime_error(ErrnoMessage("wakeup channel read failed"));
+        throw std::runtime_error(ErrorMessage("wakeup channel read failed"));
     }
 }
 

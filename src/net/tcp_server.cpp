@@ -5,6 +5,7 @@
 #include "tinykv/net/socket_util.h"
 #include "tinykv/net/poll/poller_factory.h"
 #include "tinykv/observability/logger.h"
+#include "tinykv/common/posix_error.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -21,21 +22,6 @@
 #include <sstream>
 
 namespace tinykv {
-
-namespace {
-
-std::string ErrorMessage(const char* prefix)
-{
-    return std::string(prefix) + ": " + std::strerror(errno);
-}
-
-bool IsWouldBlockError()
-{   
-    // 如果 recv() 没有数据，就返回：EAGAIN / EWOULDBLOCK
-    return errno == EAGAIN || errno == EWOULDBLOCK;
-}
-
-}
 
 TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval, TcpServerOptions options)
     : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval), m_options(options)
@@ -267,7 +253,7 @@ void TcpServer::AcceptNewClients()
             if (errno == EINTR) {
                 continue;
             }
-            if (IsWouldBlockError()) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return;
             }
 
@@ -333,7 +319,7 @@ void TcpServer::HandleClientRead(Connection &conn)
         return;
     }
     if (received < 0) {
-        if (IsWouldBlockError()) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return;
         }
 
@@ -406,7 +392,7 @@ void TcpServer::HandleClientWrite(Connection &conn)
         return;
     }
 
-    if (IsWouldBlockError()) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
         return;
     }
 

@@ -71,6 +71,8 @@ add_library(tinykv STATIC
 
     src/observability/logger.cpp
     src/observability/server_metrics.cpp
+
+    src/common/posix_error.cpp
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")

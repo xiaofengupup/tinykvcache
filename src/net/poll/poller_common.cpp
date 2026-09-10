@@ -36,10 +36,5 @@ int ToTimeoutMilliseconds(std::chrono::milliseconds timeout)
 
     return static_cast<int>(count);
 }
-
-std::string ErrorMessage(const char* prefix)
-{
-    return std::string(prefix) + ": " + std::strerror(errno);
-}
     
 } // namespace tinykv

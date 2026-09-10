@@ -1,5 +1,6 @@
 #include "tinykv/net/poll/poll_poller.h"
 #include "tinykv/net/poll/poller_common.h"
+#include "tinykv/common/posix_error.h"
 
 #include <poll.h>
 #include <stdexcept>
