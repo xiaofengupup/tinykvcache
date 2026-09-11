@@ -4,15 +4,10 @@
 #pragma once
 
 #include "tinykv/net/poll/poller.h"
+#include "tinykv/common/reactor.h"
 #include <memory>
 
 namespace tinykv {
-
-enum class PollerBackend {
-    Auto,
-    Poll,
-    Epoll
-};
 
 /**
  * Poller 工厂类，简单工厂模式，提供创建 poller 的接口

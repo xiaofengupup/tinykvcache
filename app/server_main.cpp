@@ -1,5 +1,6 @@
 #include "tinykv/net/tcp_server.h"
 #include "tinykv/net/wakeup/termination_signal_handler.h"
+#include "tinykv/net/poll/poller_factory.h"
 #include "tinykv/observability/logger.h"
 
 #include <iostream>
@@ -19,7 +20,7 @@ int main(int argc, char *argv[])
         const std::string host = argv[1];
         const int port = std::stoi(argv[2]);
 
-        tinykv::TcpServerOptions options;
+        tinykv::ServerOptions options;
         if (argc >=4) {
             options.pollerBackend = tinykv::PollerFactory::ParsePollerBackend(argv[3]);
         }

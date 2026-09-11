@@ -85,6 +85,7 @@ add_library(tinykv STATIC
     src/net/socket_util.cpp
     src/net/tcp_server.cpp
     src/net/output_buffer.cpp
+    src/net/sub_reactor.cpp
 
     src/net/poll/poller_factory.cpp
     src/net/poll/poller_common.cpp
