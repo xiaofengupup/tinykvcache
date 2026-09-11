@@ -23,8 +23,6 @@ enum class LogLevel : int {
 
 const char* LogLevelName(LogLevel level) noexcept;
 
-LogLevel ParseLogLevel(std::string_view value);
-
 /**
  * 简单线程安全日志器
  * 

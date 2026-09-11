@@ -367,66 +367,373 @@ with socket.create_connection(("127.0.0.1", 7777), timeout=3) as s:
 
 ---
 
-## 运行测试
+````markdown
+## 测试与性能验证
 
-构建后运行全部测试：
+TinyKVCache 当前包含单元测试、端到端测试、配置加载测试、优雅退出测试、
+慢客户端隔离测试、冒烟测试以及性能压测脚本。
+
+### 1. 运行全部 CTest
+
+完成构建后，可以直接运行全部测试：
 
 ```bash
-ctest \
-  --test-dir build-quality \
-  --output-on-failure
+ctest --test-dir build --output-on-failure
+````
+
+Release 构建：
+
+```bash
+ctest --test-dir build-release --output-on-failure
 ```
 
-测试分层：
-
-- **单元测试**：`test_frame_codec`、`test_command_parser`、`test_kv_store`、`test_command_executor`、`test_output_buffer`、`test_socket_util`、`test_scoped_fd`、`test_poller`、`test_wakeup_channel`、`test_server_metrics`
-- **集成测试**：`tests/integration/test_server_e2e.py`（真实进程 + 真实 socket 全链路）、`tests/integration/test_graceful_shutdown.py`（SIGTERM 优雅退出验证）
-- **烟雾测试**：
+其中 `build_release.sh` 已经自动执行完整 CTest：
 
 ```bash
-python3 scripts/smoke_test.py
-```
-
-- **慢客户端测试**（验证背压与硬上限保护）：
-
-```bash
-python3 scripts/slow_client_test.py
+./scripts/build_release.sh
 ```
 
 ---
 
-## 压测
+### 2. Server E2E 测试
 
-项目提供了一个简单的 Python 压测脚本，用于快速观察服务端基础吞吐能力：
+`test_server_e2e.py` 会自行启动 `tinykv_server`，验证：
+
+* STATS
+* PING
+* SET / GET
+* 多客户端共享 KVStore
+* 半包处理
+* 粘包 / pipeline
+* QUIT
+* 多 Sub Reactor 下的基本服务能力
+
+通过 CTest 运行：
 
 ```bash
-python3 scripts/benchmark.py --host 127.0.0.1 --port 7777 --connections 10 --requests 1000
+ctest --test-dir build -R server_e2e --output-on-failure
 ```
 
-压测脚本特点：
+也可以直接运行：
 
-- 支持多 TCP 连接并发
-- 每个连接串行发送多组 `PING / SET / GET`
-- 统计总请求数、错误数、总耗时、QPS、平均延迟与 P50 / P95 / P99 / Max 分位数
-- 支持 `--output-json <path>` 导出 JSON 报告
+```bash
+python3 tests/integration/test_server_e2e.py \
+    --server ./build/tinykv_server
+```
 
-示例输出：
+---
+
+### 3. Graceful Shutdown 测试
+
+`test_graceful_shutdown.py` 会自行启动 Server，建立有效客户端连接后发送
+`SIGTERM`，验证 Server 能够从 `Running -> Draining -> Stopped` 正常退出，
+并正确关闭已有客户端连接。
+
+通过 CTest：
+
+```bash
+ctest --test-dir build -R graceful_shutdown --output-on-failure
+```
+
+直接运行：
+
+```bash
+python3 tests/integration/test_graceful_shutdown.py \
+    --server ./build/tinykv_server \
+    --poller auto
+```
+
+macOS 可以显式使用：
+
+```bash
+python3 tests/integration/test_graceful_shutdown.py \
+    --server ./build/tinykv_server \
+    --poller poll
+```
+
+Linux 可以显式测试 epoll：
+
+```bash
+python3 tests/integration/test_graceful_shutdown.py \
+    --server ./build/tinykv_server \
+    --poller epoll
+```
+
+---
+
+### 4. 配置加载测试
+
+`test_config_loading.py` 会自行启动 Server，并动态生成临时 TOML 配置，
+覆盖配置系统的正确路径和错误路径，包括：
+
+* 完整配置
+* 部分配置 + 默认值
+* `--config` / `--config=...` / `-c`
+* CLI 覆盖 TOML
+* 配置文件不存在
+* TOML 语法错误
+* 配置项非法值
+* 配置项类型错误
+* CLI 非法参数
+* 配置参数之间的约束关系
+
+通过 CTest：
+
+```bash
+ctest --test-dir build -R load_configuration --output-on-failure
+```
+
+直接运行：
+
+```bash
+python3 tests/integration/test_config_loading.py \
+    --server ./build/tinykv_server
+```
+
+如果启用了“未知 TOML 字段必须报错”的严格模式：
+
+```bash
+python3 tests/integration/test_config_loading.py \
+    --server ./build/tinykv_server \
+    --strict-unknown-fields
+```
+
+---
+
+### 5. Slow Client 隔离测试
+
+`slow_client_test.py` 会自行启动 Server，并强制使用：
 
 ```text
-benchmark result
-----------------
-total_requests : 30000
-total_errors   : 0
-elapsed_sec    : 2.730
-qps            : 10989.01
-avg_latency_ms : 0.273
-latency_p50_ms  : 0.250
-latency_p95_ms  : 0.410
-latency_p99_ms  : 0.620
-latency_max_ms  : 3.105
+sub_reactors = 1
 ```
 
-> 说明：该脚本只是开发阶段的轻量压测工具，适合验证协议、并发连接与服务端基本吞吐，不等价于工业级压测结论。
+确保 slow client 和 control client 位于同一个 Sub Reactor 中，从而真正验证：
+
+* Non-blocking I/O
+* Reactor fairness
+* Write backpressure
+* High / Low Watermark
+* Write Hard Limit
+* 慢客户端不会明显阻塞正常客户端
+
+Debug 构建：
+
+```bash
+python3 scripts/slow_client_test.py \
+    --server ./build/tinykv_server
+```
+
+Release 构建：
+
+```bash
+python3 scripts/slow_client_test.py \
+    --server ./build-release/tinykv_server
+```
+
+指定 Poller：
+
+```bash
+python3 scripts/slow_client_test.py \
+    --server ./build-release/tinykv_server \
+    --poller poll
+```
+
+Linux：
+
+```bash
+python3 scripts/slow_client_test.py \
+    --server ./build-release/tinykv_server \
+    --poller epoll
+```
+
+---
+
+### 6. Smoke Test
+
+`smoke_test.py` **不会自行启动 Server**，运行前需要先启动 TinyKVCache。
+
+先启动服务：
+
+```bash
+./scripts/run_server.sh \
+    --config config/tinykv.toml
+```
+
+或者使用 CLI：
+
+```bash
+./scripts/run_server.sh \
+    --host 127.0.0.1 \
+    --port 7777
+```
+
+然后执行：
+
+```bash
+python3 scripts/smoke_test.py \
+    --host 127.0.0.1 \
+    --port 7777
+```
+
+Smoke Test 主要验证：
+
+* PING
+* SET / GET
+* EXPIRE
+* TTL
+* 过期 Key
+* STATS
+* QUIT
+
+---
+
+### 7. Benchmark
+
+`benchmark.py` **不会自行启动 Server**，需要先单独启动 TinyKVCache。
+
+建议使用 Release 构建，并将日志等级设置为 `warn` 或 `error`：
+
+```bash
+./scripts/run_server.sh \
+    --config config/tinykv.toml \
+    --sub-reactors 4 \
+    --log-level warn
+```
+
+然后运行压测：
+
+```bash
+python3 scripts/benchmark.py \
+    --host 127.0.0.1 \
+    --port 7777 \
+    --connections 100 \
+    --requests 1000
+```
+
+指定 Value 大小：
+
+```bash
+python3 scripts/benchmark.py \
+    --host 127.0.0.1 \
+    --port 7777 \
+    --connections 100 \
+    --requests 1000 \
+    --value-size 128
+```
+
+输出 JSON 报告：
+
+```bash
+python3 scripts/benchmark.py \
+    --host 127.0.0.1 \
+    --port 7777 \
+    --connections 100 \
+    --requests 1000 \
+    --output-json benchmark.json
+```
+
+Benchmark 中每一轮执行：
+
+```text
+PING
+SET
+GET
+```
+
+因此理论请求总数为：
+
+```text
+connections × requests × 3
+```
+
+例如：
+
+```text
+100 connections × 1000 rounds × 3 requests = 300000 requests
+```
+
+输出指标包括：
+
+* QPS
+* Average Latency
+* P50
+* P95
+* P99
+* Max Latency
+* Total Errors
+* Completed / Failed Workers
+
+为了评估 Main/Sub Reactor 架构的扩展性，建议固定 Benchmark 参数，
+分别测试不同 Sub Reactor 数量：
+
+```bash
+--sub-reactors 1
+--sub-reactors 2
+--sub-reactors 4
+--sub-reactors 8
+--sub-reactors 16
+```
+
+并对比：
+
+```text
+Sub Reactors | QPS | Avg | P50 | P95 | P99
+```
+
+由于当前多个 Sub Reactor 仍然共享同一个 KVStore，该测试也可以用于观察
+随着 Reactor 数量增加后，KVStore 锁竞争对吞吐量和尾延迟的影响。
+
+---
+
+### 推荐测试流程
+
+开发阶段：
+
+```bash
+./scripts/build.sh
+
+ctest --test-dir build --output-on-failure
+
+python3 scripts/slow_client_test.py \
+    --server ./build/tinykv_server
+```
+
+Release / 部署前：
+
+```bash
+./scripts/build_release.sh
+
+python3 scripts/slow_client_test.py \
+    --server ./build-release/tinykv_server
+```
+
+性能测试：
+
+```bash
+./scripts/run_server.sh \
+    --config config/tinykv.toml \
+    --sub-reactors 4 \
+    --log-level warn
+
+python3 scripts/smoke_test.py \
+    --host 127.0.0.1 \
+    --port 7777
+
+python3 scripts/benchmark.py \
+    --host 127.0.0.1 \
+    --port 7777 \
+    --connections 100 \
+    --requests 1000
+```
+
+```
+
+其中原始 `benchmark.py` 和 `smoke_test.py` 都是连接一个已经运行的 Server，而不是自行启动 Server。
+
+如果你愿意，我下一步也可以把这一段直接整理成你最终 `README.md` 里的 **Testing & Benchmark** 章节。
+```
+
 
 ---
 

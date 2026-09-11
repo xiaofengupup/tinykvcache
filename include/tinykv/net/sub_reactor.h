@@ -8,7 +8,7 @@
 #include "tinykv/net/scoped_fd.h"
 #include "tinykv/net/output_buffer.h"
 #include "tinykv/observability/server_metrics.h"
-#include "tinykv/common/reactor.h"
+#include "tinykv/common/server_info.h"
 #include "tinykv/core/kv_store.h"
 
 #include <string>
@@ -26,7 +26,8 @@ class SubReactor {
 
 public:
     // SubReactor 构造
-    explicit SubReactor(std::uint16_t id, const ServerOptions& m_options, ServerMetrics& m_metrics, KVStore& m_store);
+    explicit SubReactor(std::uint16_t id, ServerMetrics& m_metrics, KVStore& m_store,
+        const NetworkOptions& networkOptions, const ReactorOptions& reactorOptions);
 
     // 启动 SubReactor
     void Start();
@@ -127,9 +128,11 @@ private:
     std::chrono::steady_clock::time_point m_requestedShutdownDeadline {};
     std::chrono::steady_clock::time_point m_shutdownDeadline {};
 
-    ServerOptions m_options;
     KVStore& m_store;
     ServerMetrics& m_metrics;
+
+    NetworkOptions m_networkOptions;
+    ReactorOptions m_reactorOptions;
 };
 
 } // namespace tinykv

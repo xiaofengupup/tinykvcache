@@ -71,8 +71,15 @@ FetchContent_Declare(
     GIT_TAG 12.2.0
     GIT_SHALLOW TRUE
 )
-
 FetchContent_MakeAvailable(fmt)
+
+# 配置 toml
+FetchContent_Declare(
+    tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+)
+FetchContent_MakeAvailable(tomlplusplus)
 
 # tinykv 核心库
 add_library(tinykv STATIC
@@ -98,6 +105,10 @@ add_library(tinykv STATIC
     src/observability/server_metrics.cpp
 
     src/common/posix_error.cpp
+
+    src/config/config_loader.cpp
+    src/config/command_line.cpp
+    src/config/config_parser.cpp
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -122,6 +133,7 @@ target_link_libraries(tinykv PUBLIC
     tinykv_sanitizers
     Threads::Threads
     fmt::fmt
+    tomlplusplus::tomlplusplus
 )
 
 add_executable(tinykv_client
@@ -210,7 +222,7 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
             --server
             $<TARGET_FILE:tinykv_server>
-            --backend
+            --poller
             auto
     )
 
@@ -218,7 +230,22 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
         graceful_shutdown
         PROPERTIES
             LABELS "integration"
-            TIMEOUT 15
+            TIMEOUT 20
+    )
+
+    add_test(
+        NAME load_configuration
+        COMMAND
+        ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_config_loading.py
+        --server $<TARGET_FILE:tinykv_server>
+    )
+
+    set_tests_properties(
+        graceful_shutdown
+        PROPERTIES
+            LABELS "integration"
+            TIMEOUT 20
     )
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

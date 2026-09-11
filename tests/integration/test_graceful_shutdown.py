@@ -91,10 +91,7 @@ def wait_until_ready(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
-    parser.add_argument(
-        "--backend",
-        default="auto",
-    )
+    parser.add_argument("--poller", default="auto", choices=["auto", "poll", "epoll"])
 
     args = parser.parse_args()
 
@@ -107,9 +104,11 @@ def main() -> int:
         process = subprocess.Popen(
             [
                 args.server,
-                host,
-                str(port),
-                args.backend,
+                "--host", host,
+                "--port", str(port),
+                "--poller", args.poller,
+                "--sub-reactors", "2",
+                "--log-level", "warn",
             ],
             stdout=server_log,
             stderr=subprocess.STDOUT,

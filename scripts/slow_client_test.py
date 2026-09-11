@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+验证慢客户端不会阻塞同一 Reactor 中的其他客户端。
+
+建议服务端以：
+    --sub-reactors 1
+运行，以确保 slow client 和 control client位于同一个 Sub Reactor 中。
+"""
+
 """验证慢客户端不会阻塞其他客户端。"""
 
 import argparse

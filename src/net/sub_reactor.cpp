@@ -17,9 +17,10 @@
 
 namespace tinykv {
 
-SubReactor::SubReactor(std::uint16_t id, const ServerOptions& options,
-    ServerMetrics& metrics, KVStore& store)
-    : m_id(id), m_options(options), m_store(store), m_metrics(metrics) 
+SubReactor::SubReactor(std::uint16_t id, ServerMetrics& metrics, KVStore& store,
+    const NetworkOptions& networkOptions, const ReactorOptions& reactorOptions)
+    : m_id(id), m_store(store), m_metrics(metrics),
+      m_networkOptions(networkOptions), m_reactorOptions(reactorOptions)
 {}
 
 void SubReactor::Start()
@@ -28,7 +29,7 @@ void SubReactor::Start()
         throw std::logic_error("Sub-reactor can only run once!");
     }
 
-    m_poller = PollerFactory::CreatePoller(m_options.pollerBackend);
+    m_poller = PollerFactory::CreatePoller(m_reactorOptions.pollerBackend);
     m_poller->Add(m_controlWakeup.ReadFd(), IoEvent::Read);
     PublishState(ServerState::Running);
 
@@ -299,13 +300,13 @@ void SubReactor::HandleClientRead(Connection &conn)
         return;
     }
 
-    if (conn.readBuffer.size() >= m_options.maxReadBufferBytes) {
+    if (conn.readBuffer.size() >= m_networkOptions.maxReadBufferBytes) {
         RejectOversizedReadBuffer(conn);
         return;
     }
 
     std::array<char, 16U * 1024U> temp{};
-    const std::size_t availableBytes = m_options.maxReadBufferBytes - conn.readBuffer.size();
+    const std::size_t availableBytes = m_networkOptions.maxReadBufferBytes - conn.readBuffer.size();
     const std::size_t readSize = std::min(temp.size(), availableBytes);
 
     // 这里只执行一次 recv，是因为当前使用的是level-triggered poll：
@@ -380,7 +381,7 @@ void SubReactor::HandleClientWrite(Connection &conn)
         return;
     }
 
-    const std::size_t bytesToWrite = std::min(conn.writeBuffer.Size(), m_options.maxWriteBytesPerEvent);
+    const std::size_t bytesToWrite = std::min(conn.writeBuffer.Size(), m_networkOptions.maxWriteBytesPerEvent);
     ssize_t written = -1;
     do {
         written = ::send(conn.fd.Get(), conn.writeBuffer.Data(), bytesToWrite, 0);
@@ -419,7 +420,7 @@ void SubReactor::UpdateReadBackPressure(Connection& conn)
     const std::size_t pendingBytes = conn.writeBuffer.Size();
 
     if (conn.readPaused) {
-        if (pendingBytes <= m_options.writeLowWatermarkBytes) {
+        if (pendingBytes <= m_networkOptions.writeLowWatermarkBytes) {
             conn.readPaused = false;
             m_metrics.OnReadResumed();
             TINYKV_LOG_DEBUG(
@@ -429,7 +430,7 @@ void SubReactor::UpdateReadBackPressure(Connection& conn)
         return;
     }
 
-    if (pendingBytes >= m_options.writeHighWatermarkBytes) {
+    if (pendingBytes >= m_networkOptions.writeHighWatermarkBytes) {
         conn.readPaused = true;
 
         m_metrics.OnReadPaused();
@@ -574,7 +575,7 @@ bool SubReactor::QueueResponse(Connection& conn, const std::string& response)
     }
 
     const std::size_t pendingBytes = conn.writeBuffer.Size();
-    const std::size_t hardLimit = m_options.writeHardLimitBytes;
+    const std::size_t hardLimit = m_networkOptions.writeHardLimitBytes;
 
     if (pendingBytes > hardLimit || frame.size() > hardLimit - pendingBytes) {
         m_metrics.OnSlowClientDisconnected();

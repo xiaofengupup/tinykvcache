@@ -115,7 +115,14 @@ def run_test(server_path: str) -> None:
 
     with tempfile.TemporaryFile(mode="w+t") as server_log:
         process = subprocess.Popen(
-            [server_path, host, str(port)],
+            [
+                server_path,
+                "--host", host,
+                "--port", str(port),
+                "--poller", "auto",
+                "--sub-reactors", "2",
+                "--log-level","warn"
+            ],
             stdout=server_log,
             stderr=subprocess.STDOUT,
             text=True,

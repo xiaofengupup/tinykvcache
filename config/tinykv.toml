@@ -1,0 +1,24 @@
+[server]
+host = "0.0.0.0"
+port = 7777
+
+[reactor]
+poller = "auto"
+sub_reactors = 0
+
+[network]
+max_read_buffer_bytes = 1048580
+write_high_watermark_bytes = 1048576
+write_low_watermark_bytes = 524288
+write_hard_limit_bytes = 4194304
+max_write_bytes_per_event = 65536
+max_accepts_per_event = 64
+
+[shutdown]
+graceful_timeout_ms = 5000
+
+[ttl]
+sweep_interval_ms = 5000
+
+[logging]
+level = "info"

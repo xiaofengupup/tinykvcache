@@ -10,7 +10,7 @@
 #include "tinykv/net/poll/poller.h"
 #include "tinykv/net/wakeup/wakeup_channel.h"
 #include "tinykv/observability/server_metrics.h"
-#include "tinykv/common/reactor.h"
+#include "tinykv/common/server_info.h"
 #include "tinykv/net/sub_reactor.h"
 
 #include <string>
@@ -33,8 +33,9 @@ namespace tinykv {
 class TcpServer {
 public:
     TcpServer(std::string host, int port,
-        std::chrono::seconds sweepInterval = std::chrono::seconds(5),
-        ServerOptions options = ServerOptions{});
+        std::chrono::milliseconds sweepInterval = std::chrono::milliseconds(5000),
+        NetworkOptions options = NetworkOptions{}, ReactorOptions reactorOptions = ReactorOptions{},
+        ShutdownOptions shutdownOptions = ShutdownOptions{});
     ~TcpServer();
 
     // 禁止移动
@@ -97,14 +98,17 @@ private:
     std::size_t m_nextSubReactorIndex {0};
 
      // TTL 后台清理线程相关
-    std::chrono::seconds m_sweepInterval {5};
+    std::chrono::milliseconds m_sweepInterval {5000};
     bool m_sweeperRunning {false};        // 表示 sweeper 线程是否正在运行
     std::mutex m_sweeperMutex;            // 保护 m_sweepRunning，并参与 m_sweepCv 等待协议
     std::condition_variable m_sweepCv;    // 负责及时唤醒 sweeper 线程
     std::thread m_sweepThread;            // sweeper 后台线程对象
 
     // TCP Server 配置
-    ServerOptions m_options;
+    NetworkOptions m_networkOptions;
+    ReactorOptions m_reactorOptions;
+    ShutdownOptions m_shutdownOptions;
+
     // TCP server metrics
     ServerMetrics m_metrics;
 

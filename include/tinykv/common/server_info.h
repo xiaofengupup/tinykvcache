@@ -47,7 +47,7 @@ enum class ServerState {
     Stopped
 };
 
-struct ServerOptions {
+struct NetworkOptions {
     // 单连接允许保留的最大未完成请求数据。
     // 默认略大于 FrameCodec 的 1 MiB payload 上限。
     std::size_t maxReadBufferBytes { 1024U * 1024U + 4U };
@@ -67,15 +67,19 @@ struct ServerOptions {
 
     // 一次 listen fd 可读事件最多接受的连接数。
     std::size_t maxAcceptsPerEvent { 64 };
+};
 
-    // Auto：Linux 使用 epoll，macOS 使用 poll。
+struct ReactorOptions { 
+    // Auto：Linux 使用 epoll，macOS 使用 poll
     PollerBackend pollerBackend { PollerBackend::Auto };
 
-    // 收到退出请求后，允许现有的写缓冲区排空的最长时间
-    std::chrono::milliseconds gracefulShutdownTimeout { std::chrono::milliseconds(3000) };
+    // Sub Reactors 数量，默认是 2
+    std::size_t subReactorCount { 2 };
+};
 
-    // 创建的子 reactor 的线程数
-    std::size_t subReactorCount { 4U };
+struct ShutdownOptions {
+    // 优雅退出允许等待的最大时长
+    std::chrono::milliseconds gracefulTimeout { std::chrono::milliseconds(3000) };
 };
  
 } // namespace tinykv

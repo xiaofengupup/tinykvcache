@@ -23,31 +23,33 @@
 
 namespace tinykv {
 
-TcpServer::TcpServer(std::string host, int port, std::chrono::seconds sweepInterval, ServerOptions options)
-    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval), m_options(options)
+TcpServer::TcpServer(std::string host, int port, std::chrono::milliseconds sweepInterval,
+    NetworkOptions networkOptions, ReactorOptions reactorOptions, ShutdownOptions shutdownOptions)
+    : m_host(std::move(host)), m_port(port), m_sweepInterval(sweepInterval),
+      m_networkOptions(networkOptions), m_reactorOptions(reactorOptions), m_shutdownOptions(shutdownOptions)
 {
-    if (m_options.maxReadBufferBytes < 4U) {
+    if (m_networkOptions.maxReadBufferBytes < 4U) {
         throw std::invalid_argument("maxReadBufferBytes must be at least 4");
     }
 
-    if (m_options.writeLowWatermarkBytes > m_options.writeHighWatermarkBytes) {
+    if (m_networkOptions.writeLowWatermarkBytes > m_networkOptions.writeHighWatermarkBytes) {
         throw std::invalid_argument("write low watermark exceeds high watermark");
     }
 
-    if (m_options.writeHighWatermarkBytes > m_options.writeHardLimitBytes) {
+    if (m_networkOptions.writeHighWatermarkBytes > m_networkOptions.writeHardLimitBytes) {
         throw std::invalid_argument("write high watermark exceeds hard limit");
     }
 
-    if (m_options.maxWriteBytesPerEvent == 0U) {
+    if (m_networkOptions.maxWriteBytesPerEvent == 0U) {
         throw std::invalid_argument("maxWriteBytesPerEvent must be greater than zero");
     }
 
-    if (m_options.maxAcceptsPerEvent == 0U) {
+    if (m_networkOptions.maxAcceptsPerEvent == 0U) {
         throw std::invalid_argument("maxAcceptsPerEvent must be greater than zero");
     }
 
-    if (m_options.subReactorCount < 1U || m_options.subReactorCount > 16U) {
-        throw std::invalid_argument("invalid sub reactor count");
+    if (m_reactorOptions.subReactorCount < 1U || m_reactorOptions.subReactorCount > 16U) {
+        throw std::invalid_argument("sub_reactors must be between 1 and 16");
     }
 }
 
@@ -64,7 +66,7 @@ void TcpServer::Run()
     }
 
     try {
-        m_poller = PollerFactory::CreatePoller(m_options.pollerBackend);
+        m_poller = PollerFactory::CreatePoller(m_reactorOptions.pollerBackend);
         m_listenFd = CreateListenSocket(m_host, m_port);
         SetNonBlocking(m_listenFd.Get());
         SetCloseOnExec(m_listenFd.Get());
@@ -72,9 +74,11 @@ void TcpServer::Run()
         m_poller->Add(m_stopWakeup.ReadFd(), IoEvent::Read);
 
         // 创建并启动 Sub Reactor
-        m_subReactors.reserve(m_options.subReactorCount);
-        for (std::size_t i = 0; i < m_options.subReactorCount; ++i) {
-            m_subReactors.push_back(std::make_unique<SubReactor>(static_cast<std::uint16_t>(i), m_options, m_metrics, m_store));
+        m_subReactors.reserve(m_reactorOptions.subReactorCount);
+        for (std::size_t i = 0; i < m_reactorOptions.subReactorCount; ++i) {
+            m_subReactors.push_back(
+                std::make_unique<SubReactor>(static_cast<std::uint16_t>(i), m_metrics, m_store,m_networkOptions, m_reactorOptions)
+            );
         }
         for (auto& reactor : m_subReactors) {
             reactor->Start();
@@ -82,10 +86,7 @@ void TcpServer::Run()
 
         m_state = ServerState::Running;
         StartSweeperThread();
-        TINYKV_LOG_INFO(
-            "server started, host={}, port={}, poller={}, subReactorCount={}",
-            m_host, m_port, m_poller->Name(), m_options.subReactorCount
-        );
+        TINYKV_LOG_INFO_MSG("TinyKVCache server started...");
 
         // 主 Reactor 事件循环，专职负责监听 listen fd，处理新连接的建立（Accept）
         // 同时监听处理 stop wakeup 事件
@@ -158,7 +159,7 @@ void TcpServer::BeginGracefulShutdown()
     }
 
     m_state = ServerState::Draining;
-    m_shutdownDeadline = std::chrono::steady_clock::now() + m_options.gracefulShutdownTimeout;
+    m_shutdownDeadline = std::chrono::steady_clock::now() + m_shutdownOptions.gracefulTimeout;
 
     TINYKV_LOG_INFO("graceful shutdown started, sub reactor size={}", m_subReactors.size());
     
@@ -293,7 +294,7 @@ void TcpServer::AcceptNewClients()
     // 这里采用循环的原因是：
     // 一次 poll() 通知 listen fd 可读时，可能已经有多个客户端在连接队列中，所以要一直 accept()
     std::size_t acceptedCount = 0;
-    while (acceptedCount < m_options.maxAcceptsPerEvent) {
+    while (acceptedCount < m_networkOptions.maxAcceptsPerEvent) {
         const int rawFd = ::accept(m_listenFd.Get(), nullptr, nullptr);
         if (rawFd < 0) {
             if (errno == EINTR) {
