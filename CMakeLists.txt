@@ -256,8 +256,7 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
                 --server
                 $<TARGET_FILE:tinykv_server>
-                --backend
-                epoll
+                --poller epoll
         )
 
         set_tests_properties(
