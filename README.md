@@ -367,7 +367,6 @@ with socket.create_connection(("127.0.0.1", 7777), timeout=3) as s:
 
 ---
 
-````markdown
 ## 测试与性能验证
 
 TinyKVCache 当前包含单元测试、端到端测试、配置加载测试、优雅退出测试、
@@ -379,7 +378,7 @@ TinyKVCache 当前包含单元测试、端到端测试、配置加载测试、�
 
 ```bash
 ctest --test-dir build --output-on-failure
-````
+```
 
 Release 构建：
 
@@ -726,14 +725,6 @@ python3 scripts/benchmark.py \
     --connections 100 \
     --requests 1000
 ```
-
-```
-
-其中原始 `benchmark.py` 和 `smoke_test.py` 都是连接一个已经运行的 Server，而不是自行启动 Server。
-
-如果你愿意，我下一步也可以把这一段直接整理成你最终 `README.md` 里的 **Testing & Benchmark** 章节。
-```
-
 
 ---
 
