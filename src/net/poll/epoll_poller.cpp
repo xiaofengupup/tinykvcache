@@ -29,7 +29,7 @@ void EpollPoller::Add(int fd, IoEvent interests)
 {
     ValidateInterests(fd, interests);
 
-    const atuo [iter, inserted] = m_interests.emplace(fd, interests);
+    const auto [iter, inserted] = m_interests.emplace(fd, interests);
     if (!inserted) {
         throw std::logic_error("EpollPoller fd is already registered");
     }
@@ -38,7 +38,7 @@ void EpollPoller::Add(int fd, IoEvent interests)
     nativeEvent.events = ToNativeEvents(interests);
     nativeEvent.data.fd = fd;
 
-    if (::epoll_ctl(m_epollFd.Get(), EPOLL_CRL_ADD, fd, nativeEvent) < 0) {
+    if (::epoll_ctl(m_epollFd.Get(), EPOLL_CTL_ADD, fd, &nativeEvent) < 0) {
         m_interests.erase(iter);
         throw std::runtime_error(ErrorMessage("epoll_ctl EPOLL_CRL_ADD failed"));
     }
@@ -93,16 +93,17 @@ std::vector<ReadyEvent> EpollPoller::Wait(std::chrono::milliseconds timeout)
     }
 
     std::vector<ReadyEvent> readyEvents;
-    readyEvents.reserve(static_cast<std::size_t>(result)):
+    readyEvents.reserve(static_cast<std::size_t>(result));
     for (int idx = 0; idx < result; ++idx) {
         const epoll_event& nativeEvent = m_nativeEvents[static_cast<std::size_t>(idx)];
         readyEvents.push_back(
-            ReadyEvent {nativeEvent.data.fd, FromNativeEvents(nativeEvent.events)};
+            ReadyEvent {nativeEvent.data.fd, FromNativeEvents(nativeEvent.events)}
         );
     }
 
-    if (static_cast<std::size_t>(result) == nativeEvents_.size() && nativeEvents_.size() < MAX_EVENT_CAPACITY) {
-        const std::size_t nextCapacity = std::min(m_nativeEvents.size() * 2U, MAX_EVENT_CAPACITY);
+    if (static_cast<std::size_t>(result) == m_nativeEvents.size() && m_nativeEvents.size() < MAX_EVENT_CAPACITY) {
+        std::size_t curSize = m_nativeEvents.size();
+        const std::size_t nextCapacity = std::min(curSize * 2, MAX_EVENT_CAPACITY);
         m_nativeEvents.resize(nextCapacity);
     }
 

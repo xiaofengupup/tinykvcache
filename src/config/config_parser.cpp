@@ -1,6 +1,7 @@
 #include "tinykv/config/config_parser.h"
 
 #include <stdexcept>
+#include <unordered_map>
 
 namespace tinykv {
 

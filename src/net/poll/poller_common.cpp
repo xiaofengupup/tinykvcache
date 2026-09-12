@@ -23,8 +23,7 @@ void ValidateInterests(int fd, IoEvent interests)
 
 int ToTimeoutMilliseconds(std::chrono::milliseconds timeout)
 {
-    const auto count = timeout.count();
-
+    auto count = timeout.count();
     if (count < 0) {
         return -1;
     }

@@ -14,7 +14,7 @@ std::unique_ptr<Poller> PollerFactory::CreatePoller(PollerBackend backend)
     switch (backend) {
         case PollerBackend::Auto:
 #if defined(__linux__)
-            retrun std::make_unique<EpollPoller>();
+            return std::make_unique<EpollPoller>();
 #else
             return std::make_unique<PollPoller>();
 #endif

@@ -113,17 +113,17 @@ private:
         ::tinykv::Logger::Instance().Debug(FMT_STRING(messageLiteral));   \
     } while (false)
 
-#define TINYKV_LOG_INFO_MSG(messageLiteral)                                   \
+#define TINYKV_LOG_INFO_MSG(messageLiteral)                               \
     do {                                                                  \
         ::tinykv::Logger::Instance().Info(FMT_STRING(messageLiteral));    \
     } while (false)
 
-#define TINYKV_LOG_WARN_MSG(messageLiteral)                                   \
+#define TINYKV_LOG_WARN_MSG(messageLiteral)                               \
     do {                                                                  \
         ::tinykv::Logger::Instance().Warn(FMT_STRING(messageLiteral));    \
     } while (false)
 
-#define TINYKV_LOG_ERROR_MSG(messageLiteral)                                  \
+#define TINYKV_LOG_ERROR_MSG(messageLiteral)                              \
     do {                                                                  \
         ::tinykv::Logger::Instance().Error(FMT_STRING(messageLiteral));   \
     } while (false)
