@@ -78,7 +78,6 @@ def main() -> int:
         expect(sock, "GET name", "$xiaofeng")
         expect(sock, "SET sentence hello tiny kv cache", "+OK")
         expect(sock, "GET sentence", "$hello tiny kv cache")
-
         expect(sock, "EXPIRE name 1", "+OK")
 
         ttl_response = send_command(sock, "TTL name")
@@ -90,7 +89,24 @@ def main() -> int:
         time.sleep(1.2)
 
         expect(sock, "GET name", "$nil")
-        expect(sock, "STATS", "+keys=1,persistent=1,expiring=0")
+
+        stats = send_command(sock, "STATS")
+        required_fields = [
+            "+keys=1",
+            "persistent=1",
+            "expiring=0",
+            "connections_active=",
+            "connections_accepted=",
+            "bytes_received=",
+            "bytes_sent=",
+            "commands=",
+            "protocol_errors=",
+        ]
+        for field in required_fields:
+            if field not in stats:
+                raise AssertionError(f"STATS 缺少字段 {field!r}: {stats!r}")
+        print(f"[OK] STATS -> {stats}")
+
         expect(sock, "QUIT", "+BYE")
 
     print("smoke test passed")

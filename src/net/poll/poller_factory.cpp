@@ -31,21 +31,4 @@ std::unique_ptr<Poller> PollerFactory::CreatePoller(PollerBackend backend)
     throw std::logic_error("unknown backend");
 }
 
-PollerBackend PollerFactory::ParsePollerBackend(std::string_view value)
-{
-    if (value == "auto") {
-        return PollerBackend::Auto;
-    }
-
-    if (value == "epoll") {
-        return PollerBackend::Epoll;
-    }
-
-    if (value == "poll") {
-        return PollerBackend::Poll;
-    }
-
-    throw std::invalid_argument("poller backend must be auto, epoll or poll");
-}
-
 } // namespace tinykv

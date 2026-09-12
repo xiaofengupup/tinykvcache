@@ -50,6 +50,37 @@ tinykv_config_warnings(tinykv_warnings)
 add_library(tinykv_sanitizers INTERFACE)
 tinykv_configure_sanitizers(tinykv_sanitizers)
 
+# 配置依赖项
+set(
+    FETCHCONTENT_BASE_DIR
+    "${CMAKE_SOURCE_DIR}/.deps"
+    CACHE PATH
+    "Directory to download dependencies"
+)
+
+include(FetchContent)
+
+# 配置 fmt 库
+set(FMT_TEST OFF CACHE BOOL "" FORCE)
+set(FMT_DOC OFF CACHE BOOL "" FORCE)
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    fmt
+    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+    GIT_TAG 12.2.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(fmt)
+
+# 配置 toml
+FetchContent_Declare(
+    tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+)
+FetchContent_MakeAvailable(tomlplusplus)
+
 # tinykv 核心库
 add_library(tinykv STATIC
     src/core/frame_codec.cpp
@@ -61,6 +92,7 @@ add_library(tinykv STATIC
     src/net/socket_util.cpp
     src/net/tcp_server.cpp
     src/net/output_buffer.cpp
+    src/net/sub_reactor.cpp
 
     src/net/poll/poller_factory.cpp
     src/net/poll/poller_common.cpp
@@ -71,6 +103,12 @@ add_library(tinykv STATIC
 
     src/observability/logger.cpp
     src/observability/server_metrics.cpp
+
+    src/common/posix_error.cpp
+
+    src/config/config_loader.cpp
+    src/config/command_line.cpp
+    src/config/config_parser.cpp
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -94,6 +132,8 @@ target_link_libraries(tinykv PUBLIC
     tinykv_warnings
     tinykv_sanitizers
     Threads::Threads
+    fmt::fmt
+    tomlplusplus::tomlplusplus
 )
 
 add_executable(tinykv_client
@@ -114,126 +154,42 @@ target_link_libraries(tinykv_server PRIVATE
 if (TINYKV_BUILD_TESTS)
     enable_testing()
 
-    add_library(tinykv_test_options INTERFACE)
-    target_include_directories(tinykv_test_options INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.17.0
+        GIT_SHALLOW TRUE
     )
+    FetchContent_MakeAvailable(googletest)
 
-    # 冒烟测试
-    add_executable(test_smoke
-        tests/test_smoke.cpp
-    )
-    target_link_libraries(test_smoke PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME smoke COMMAND test_smoke)
-
-    # 帧解析测试
-    add_executable(test_frame_codec
-        tests/test_frame_codec.cpp
-    )
-    target_link_libraries(test_frame_codec PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME frame_codec COMMAND test_frame_codec)
-
-    # 命令解析测试
-    add_executable(test_command_parser
-        tests/test_command_parser.cpp
-    )
-    target_link_libraries(test_command_parser PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME command_parser COMMAND test_command_parser)
-
-    # kv 内存存储测试
-    add_executable(test_kv_store
-        tests/test_kv_store.cpp
-    )
-    target_link_libraries(test_kv_store PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME kv_store COMMAND test_kv_store)
-
-    # ScopedFd 测试
-    add_executable(test_scoped_fd
-        tests/test_scoped_fd.cpp
-    )
-    target_link_libraries(test_scoped_fd PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME scoped_fd COMMAND test_scoped_fd)
-
-    # SocketUtil 测试
-    add_executable(test_socket_util
-        tests/test_socket_util.cpp
-    )
-    target_link_libraries(test_socket_util PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME socket_util COMMAND test_socket_util)
-
-    # 测试命令执行器
-    add_executable(test_command_executor
+    add_executable(tinykv_unit_tests
         tests/test_command_executor.cpp
-    )
-    target_link_libraries(test_command_executor PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME command_executor COMMAND test_command_executor)
-
-    # 测试 OutputBuffer
-    add_executable(test_output_buffer
+        tests/test_command_parser.cpp
+        tests/test_frame_codec.cpp
+        tests/test_kv_store.cpp
         tests/test_output_buffer.cpp
-    )
-    target_link_libraries(test_output_buffer PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME output_buffer COMMAND test_output_buffer)
-
-    # 测试 Poller
-    add_executable(test_poller
         tests/test_poller.cpp
-    )
-    target_link_libraries(test_poller PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME poller COMMAND test_poller)
-
-    # 测试 wakeup channel
-    add_executable(test_wakeup_channel
+        tests/test_scoped_fd.cpp
+        tests/test_server_metrics.cpp
+        tests/test_socket_util.cpp
         tests/test_wakeup_channel.cpp
     )
-    target_link_libraries(test_wakeup_channel PRIVATE
-        tinykv tinykv_test_options
-    )
-    add_test(NAME wakeup_channel COMMAND test_wakeup_channel)
 
-    # 测试 server_metrics
-    add_executable(test_server_metrics
-        tests/test_server_metrics.cpp
-    )
-    target_link_libraries(test_server_metrics PRIVATE
+    target_link_libraries(tinykv_unit_tests PRIVATE
         tinykv
-        tinykv_test_options
+        GTest::gtest_main
     )
-    add_test(NAME server_metrics COMMAND test_server_metrics)
 
-    set_tests_properties(
-        smoke
-        frame_codec
-        command_parser
-        command_executor
-        kv_store
-        scoped_fd
-        socket_util
-        output_buffer
-        poller
-        wakeup_channel
-        server_metrics
+    target_compile_options(tinykv_unit_tests PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+
+    # CMake 官方则推荐使用 gtest_discover_tests()，它会从测试程序中自动发现每个 TEST，并分别注册到 CTest
+    include(GoogleTest)
+    gtest_discover_tests(tinykv_unit_tests
         PROPERTIES
-            LABELS "unit"
-            TIMEOUT 10
+            TIMEOUT 30
     )
 endif()
 
@@ -266,7 +222,7 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
             --server
             $<TARGET_FILE:tinykv_server>
-            --backend
+            --poller
             auto
     )
 
@@ -274,7 +230,22 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
         graceful_shutdown
         PROPERTIES
             LABELS "integration"
-            TIMEOUT 15
+            TIMEOUT 20
+    )
+
+    add_test(
+        NAME load_configuration
+        COMMAND
+        ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_config_loading.py
+        --server $<TARGET_FILE:tinykv_server>
+    )
+
+    set_tests_properties(
+        graceful_shutdown
+        PROPERTIES
+            LABELS "integration"
+            TIMEOUT 20
     )
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -285,8 +256,7 @@ if (TINYKV_BUILD_TESTS AND TINYKV_BUILD_INTEGRATION_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_graceful_shutdown.py
                 --server
                 $<TARGET_FILE:tinykv_server>
-                --backend
-                epoll
+                --poller epoll
         )
 
         set_tests_properties(

@@ -1,5 +1,6 @@
 #include "tinykv/net/poll/epoll_poller.h"
 #include "tinykv/net/poll/poller_common.h"
+#include "tinykv/common/posix_error.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -71,7 +72,7 @@ void EpollPoller::Remove(int fd)
     }
 
     if (::epoll_ctl(m_epollFd.Get(), EPOLL_CTL_DEL, fd, nullptr) < 0) {
-        throw std::runtime_error(ErrnoMessage("epoll_ctl EPOLL_CTL_DEL failed"));
+        throw std::runtime_error(ErrorMessage("epoll_ctl EPOLL_CTL_DEL failed"));
     }
 
     m_interests.erase(iter);

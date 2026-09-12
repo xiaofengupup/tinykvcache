@@ -1,5 +1,6 @@
 #include "tinykv/net/wakeup/wakeup_channel.h"
 #include "tinykv/net/socket_util.h"
+#include "tinykv/common/posix_error.h"
 
 #include <stdexcept>
 #include <string>
@@ -17,35 +18,6 @@ namespace tinykv {
 
 namespace {
 
-std::string ErrnoMessage(const char* operation)
-{
-    return std::string(operation) + ": " + std::strerror(errno);
-}
-
-/**
- * 给文件描述符 fd 设置 close-on-exec 标志，使当前进程执行 exec 系列函数启动新程序时，内核自动关闭这个 fd
- * 
- * 注意，它不是在 fork() 时关闭，而是在 exec() 成功时关闭。
- *   fork 后：子进程仍然继承 fd
- *   exec 后：设置了 FD_CLOEXEC 的 fd 被关闭
- * 
- * 什么是 exec?
- *   Unix 系统中，进程可以通过 execve/execl/execvp 等函数，把当前进程替换成另一个程序。
- *   默认情况下，当前进程已经打开的文件描述符可能会被新程序继承，包括：监听socket、客户端socket、pipe、socketpair、普通文件、日志文件
- *   但很多 fd 并不应该被新程序继承。
- */
-void SetCloseOnExec(int fd)
-{
-    const int flags = ::fcntl(fd, F_GETFD, 0);
-    if (flags < 0) {
-        throw std::runtime_error(ErrnoMessage("fcntl F_GETFD failed"));
-    }
-
-    if (::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
-        throw std::runtime_error(ErrnoMessage("fcntl F_SETFD failed"));
-    }
-}
-
 }
 
 WakeupChannel::WakeupChannel()
@@ -54,7 +26,7 @@ WakeupChannel::WakeupChannel()
     // 这一机制可以同时被 poll 和 epoll 监听
     int rawFds[2] = {-1, -1};
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, rawFds) < 0) {
-        throw std::runtime_error(ErrnoMessage("socketpair failed"));
+        throw std::runtime_error(ErrorMessage("socketpair failed"));
     }
 
     ScopedFd readFd(rawFds[0]);
@@ -137,7 +109,7 @@ void WakeupChannel::Drain()
             return;
         }
 
-        throw std::runtime_error(ErrnoMessage("wakeup channel read failed"));
+        throw std::runtime_error(ErrorMessage("wakeup channel read failed"));
     }
 }
 

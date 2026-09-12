@@ -9,6 +9,7 @@
 #include <mutex>
 #include <sstream>
 #include <utility>
+#include <fmt/format.h>
 
 namespace tinykv {
 
@@ -21,8 +22,6 @@ enum class LogLevel : int {
 };
 
 const char* LogLevelName(LogLevel level) noexcept;
-
-LogLevel ParseLogLevel(std::string_view value);
 
 /**
  * 简单线程安全日志器
@@ -38,18 +37,30 @@ public:
 
     LogLevel GetLevel() const noexcept;
     void SetLevel(LogLevel level) noexcept;
-    
-    template<typename... Args>
-    void Debug(Args&&... args) { Log(LogLevel::Debug, std::forward<Args>(args)...); }
 
     template<typename... Args>
-    void Info(Args&&... args) { Log(LogLevel::Info, std::forward<Args>(args)...); }
+    void Debug(fmt::format_string<Args...> formatString, Args&&... args) 
+    {
+        Log(LogLevel::Debug, formatString, std::forward<Args>(args)...);
+    }
 
     template<typename... Args>
-    void Warn(Args&&... args) { Log(LogLevel::Warn, std::forward<Args>(args)...); }
+    void Info(fmt::format_string<Args...> formatString, Args&&... args)
+    {
+        Log(LogLevel::Info, formatString, std::forward<Args>(args)...);
+    }
 
     template<typename... Args>
-    void Error(Args&&... args) { Log(LogLevel::Error, std::forward<Args>(args)...); }
+    void Warn(fmt::format_string<Args...> formatString, Args&&... args)
+    {
+        Log(LogLevel::Warn, formatString, std::forward<Args>(args)...);
+    }
+
+    template<typename... Args>
+    void Error(fmt::format_string<Args...> formatString, Args&&... args)
+    {
+        Log(LogLevel::Error, formatString, std::forward<Args>(args)...);
+    }
 
 private:
     Logger() = default;
@@ -58,16 +69,13 @@ private:
     void Write(LogLevel level, std::string_view message);
 
     template<typename... Args>
-    void Log(LogLevel level, Args&&... args)
+    void Log(LogLevel level, fmt::format_string<Args...> formatString, Args&&... args)
     {
         if (!ShouldLog(level)) {
             return;
         }
 
-        std::ostringstream stream;
-        (stream << ... << std::forward<Args>(args));
-
-        Write(level, stream.str());
+        Write(level, fmt::format(formatString, std::forward<Args>(args)...));
     }
 
 private:
@@ -76,3 +84,46 @@ private:
 };
 
 } // namespace tinykv
+
+// 带参数打印日志
+#define TINYKV_LOG_DEBUG(formatString, ...)                                          \
+    do {                                                                             \
+        ::tinykv::Logger::Instance().Debug(FMT_STRING(formatString), __VA_ARGS__);   \
+    } while (false)
+
+#define TINYKV_LOG_INFO(formatString, ...)                                           \
+    do {                                                                             \
+        ::tinykv::Logger::Instance().Info(FMT_STRING(formatString), __VA_ARGS__);    \
+    } while (false)
+
+#define TINYKV_LOG_WARN(formatString, ...)                                           \
+    do {                                                                             \
+        ::tinykv::Logger::Instance().Warn(FMT_STRING(formatString), __VA_ARGS__);    \
+    } while (false)
+
+#define TINYKV_LOG_ERROR(formatString, ...)                                          \
+    do {                                                                             \
+        ::tinykv::Logger::Instance().Error(FMT_STRING(formatString), __VA_ARGS__);   \
+    } while (false)
+
+
+// 纯文本日志，无参数
+#define TINYKV_LOG_DEBUG_MSG(messageLiteral)                              \
+    do {                                                                  \
+        ::tinykv::Logger::Instance().Debug(FMT_STRING(messageLiteral));   \
+    } while (false)
+
+#define TINYKV_LOG_INFO_MSG(messageLiteral)                                   \
+    do {                                                                  \
+        ::tinykv::Logger::Instance().Info(FMT_STRING(messageLiteral));    \
+    } while (false)
+
+#define TINYKV_LOG_WARN_MSG(messageLiteral)                                   \
+    do {                                                                  \
+        ::tinykv::Logger::Instance().Warn(FMT_STRING(messageLiteral));    \
+    } while (false)
+
+#define TINYKV_LOG_ERROR_MSG(messageLiteral)                                  \
+    do {                                                                  \
+        ::tinykv::Logger::Instance().Error(FMT_STRING(messageLiteral));   \
+    } while (false)

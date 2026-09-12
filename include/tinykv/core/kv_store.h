@@ -2,6 +2,18 @@
  * KVStore 内存存储模块
  * 
  * 一个线程安全的 key-vlaue 存储模块，支持 SET/GET/DEL/EXPIRE/TTL/STATS 的底层数据操作
+ * 
+ *  | 操作            | 原状态      | 新状态      | counter                    |
+ *  | -------------- | ---------- | ---------- | -------------------------- |
+ *  | SET new        | none       | persistent | `persistent++`             |
+ *  | SET overwrite  | persistent | persistent | 不变                        |
+ *  | SET overwrite  | expiring   | persistent | `expiring--, persistent++` |
+ *  | EXPIRE         | persistent | expiring   | `persistent--, expiring++` |
+ *  | EXPIRE again   | expiring   | expiring   | 不变                        |
+ *  | DEL            | persistent | none       | `persistent--`             |
+ *  | DEL            | expiring   | none       | `expiring--`               |
+ *  | Lazy expire    | expiring   | none       | `expiring--`               |
+ *  | Sweeper expire | expiring   | none       | `expiring--`               |
  */
 #pragma once
 
@@ -11,18 +23,31 @@
 #include <optional>
 #include <mutex>
 #include <unordered_map>
+#include <queue>
+#include <cstdint>
+#include <vector>
 
 namespace tinykv {
-    
+
 class KVStore {
 public:
     /**
      * KVStore 统计信息
      */
     struct InnerStats {
-        std::size_t keys {0};           // 当前有效 keys 总数
+        std::size_t keys {0};           // 当前物理存储的 keys 总数
         std::size_t persistentKeys {0}; // 没有设置过期时间的 keys 总数
         std::size_t expiringKeys {0};   // 设置了过期时间的 keys 总数
+    };
+
+    /**
+     * KVStore 删除结果
+     */
+    struct SweepResult {
+        std::size_t processed {0};
+        std::size_t removed {0};
+        bool hasMoreExpired {false};
+        bool heapRebuilt {false};
     };
 
     KVStore() = default;
@@ -76,14 +101,14 @@ public:
     /**
      * 返回当前有效 key 的数量
      * 
-     * 调用时会顺便清理已过期 key。
+     * 该方法为 O(1)，不会主动触发过期 key 清理
      */
     std::size_t Size();
 
     /**
      * 返回当前有效 key 的统计信息
      * 
-     * 调用时会顺便清理已过期 key。
+     * 该方法为 O(1)，不会主动触发过期 key 清理
      * 
      */
     InnerStats Stats();
@@ -94,7 +119,7 @@ public:
      * 返回本次清理掉的 key 数量。
      * 后续阶段可以由后台线程周期性调用这个方法。
      */
-    std::size_t SweepExpired();
+    KVStore::SweepResult SweepExpired(std::size_t maxRecordsToProcess = 1024);
 
 private:
     /**
@@ -116,13 +141,43 @@ private:
     struct Entry {
         std::string value;
         std::optional<TimePoint> expireAt;
+        std::uint64_t generation {0};
     };
 
+    struct ExpirationRecord {
+        TimePoint expireAt;
+        std::string key;
+        std::uint64_t generation {0};
+    };
+
+    struct ExpirationCompare {
+        bool operator()(const ExpirationRecord &lhs, const ExpirationRecord &rhs) const noexcept
+        {
+            return lhs.expireAt > rhs.expireAt;
+        }
+    };
+
+    using DataMap = std::unordered_map<std::string, Entry>;
+    using DataIterator = DataMap::iterator;
+
     bool IsExpired(const Entry &entry, TimePoint now) const;
-    std::size_t SweepExpiredLocked(TimePoint now);
+    void EraseEntryLocked(DataIterator it);
+    KVStore::SweepResult SweepExpiredLocked(TimePoint now, std::size_t maxRecordsToProcess = 1024);
+
+    // 解决 min heap 持续膨胀
+    bool ShouldRebuildExpirationHeapLocked() const noexcept;
+    void RebuildExpirationHeapLocked();
+
 private:
     std::mutex m_mutex;
-    std::unordered_map<std::string, Entry> m_data; 
+    std::unordered_map<std::string, Entry> m_data;
+    std::uint64_t m_nextExpirationGeneration {0};
+
+    std::size_t m_persistentKeys {0};
+    std::size_t m_expiringKeys {0};
+
+    using ExpirationQueue = std::priority_queue<ExpirationRecord, std::vector<ExpirationRecord>, ExpirationCompare>;
+    ExpirationQueue m_expirations;
 };
 
 } // namespace tinykv

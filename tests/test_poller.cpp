@@ -1,8 +1,8 @@
 #include "tinykv/net/poll/io_event.h"
 #include "tinykv/net/poll/poller_factory.h"
 #include "tinykv/net/scoped_fd.h"
-#include "test_utils.h"
 
+#include <gtest/gtest.h>
 #include <chrono>
 #include <stdexcept>
 #include <string_view>
@@ -19,7 +19,7 @@ struct PipePair {
 PipePair CreatePipePair()
 {
     int rawFds[2] = {-1, -1};
-    TINYKV_CHECK(::pipe(rawFds) == 0);
+    (void)::pipe(rawFds);
 
     return PipePair {
         tinykv::ScopedFd(rawFds[0]),
@@ -45,18 +45,18 @@ void RunReadableContract(tinykv::PollerBackend backend)
     poller->Add(pipe.readFd.Get(), tinykv::IoEvent::Read);
 
     const char input = 'A';
-    TINYKV_CHECK(::write(pipe.writeFd.Get(), &input, 1) == 1);
+    EXPECT_EQ(::write(pipe.writeFd.Get(), &input, 1), 1);
 
     const auto events = poller->Wait(std::chrono::milliseconds(500));
-    TINYKV_CHECK(ContainsEvent(events, pipe.readFd.Get(), tinykv::IoEvent::Read));
+    EXPECT_TRUE(ContainsEvent(events, pipe.readFd.Get(), tinykv::IoEvent::Read));
 
     char output = '\0';
-    TINYKV_CHECK(::read(pipe.readFd.Get(), &output, 1) == 1);
-    TINYKV_CHECK(output == input);
+    EXPECT_EQ(::read(pipe.readFd.Get(), &output, 1), 1);
+    EXPECT_EQ(output, input);
 
     poller->Remove(pipe.readFd.Get());
     const auto afterRemove = poller->Wait(std::chrono::milliseconds(0));
-    TINYKV_CHECK(!ContainsEvent(afterRemove, pipe.readFd.Get(), tinykv::IoEvent::Read));
+    EXPECT_FALSE(ContainsEvent(afterRemove, pipe.readFd.Get(), tinykv::IoEvent::Read));
 }
 
 void RunWritableContract(tinykv::PollerBackend backend)
@@ -66,7 +66,7 @@ void RunWritableContract(tinykv::PollerBackend backend)
     poller->Add(pipe.writeFd.Get(), tinykv::IoEvent::Write);
 
     const auto events = poller->Wait(std::chrono::milliseconds(500));
-    TINYKV_CHECK(ContainsEvent(events, pipe.writeFd.Get(), tinykv::IoEvent::Write));
+    EXPECT_TRUE(ContainsEvent(events, pipe.writeFd.Get(), tinykv::IoEvent::Write));
 }
 
 void RunRegistrationErrorContract(tinykv::PollerBackend backend)
@@ -81,7 +81,7 @@ void RunRegistrationErrorContract(tinykv::PollerBackend backend)
     } catch (const std::logic_error&) {
         duplicateAddThrown = true;
     }
-    TINYKV_CHECK(duplicateAddThrown);
+    EXPECT_TRUE(duplicateAddThrown);
 
     poller->Remove(pipe.readFd.Get());
     bool unknownModifyThrown = false;
@@ -90,17 +90,17 @@ void RunRegistrationErrorContract(tinykv::PollerBackend backend)
     } catch (const std::logic_error&) {
         unknownModifyThrown = true;
     }
-    TINYKV_CHECK(unknownModifyThrown);
+    EXPECT_TRUE(unknownModifyThrown);
 }
 
-void TestPollBackend()
+TEST(PollerTest, PollBackend)
 {
     RunReadableContract(tinykv::PollerBackend::Poll);
     RunWritableContract(tinykv::PollerBackend::Poll);
     RunRegistrationErrorContract(tinykv::PollerBackend::Poll);
 }
 
-void TestEpollBackend()
+TEST(PollerTest, EpollBackend)
 {
 #if TINYKV_HAS_EPOLL
     RunReadableContract(tinykv::PollerBackend::Epoll);
@@ -114,29 +114,19 @@ void TestEpollBackend()
     } catch (const std::invalid_argument&) {
         thrown = true;
     }
-    TINYKV_CHECK(thrown);
+    EXPECT_TRUE(thrown);
 #endif
 }
 
-void TestAutoBackend()
+TEST(PollerTest, AutoBackend)
 {
     auto poller = tinykv::PollerFactory::CreatePoller(tinykv::PollerBackend::Auto);
 
 #if TINYKV_HAS_EPOLL
-    TINYKV_CHECK(std::string_view(poller->Name()) == "epoll");
+    EXPECT_TRUE(std::string_view(poller->Name()) == "epoll");
 #else
-    TINYKV_CHECK(std::string_view(poller->Name()) == "poll");
+    EXPECT_TRUE(std::string_view(poller->Name()) == "poll");
 #endif
 }
 
-}
-
-int main()
-{
-    TestPollBackend();
-    TestEpollBackend();
-    TestAutoBackend();
-
-    std::cout << "poLler tests passed\n";
-    return 0;
 }

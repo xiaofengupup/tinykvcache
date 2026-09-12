@@ -22,6 +22,18 @@ void SetNonBlocking(int fd)
     }
 }
 
+void SetCloseOnExec(int fd)
+{
+    const int flags = ::fcntl(fd, F_GETFD, 0);
+    if (flags < 0) {
+        throw std::runtime_error("fcntl(F_GETFL) failed: " + std::string(std::strerror(errno)));
+    }
+
+    if (::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
+        throw std::runtime_error("fcntl(F_SETFL) failed: " + std::string(std::strerror(errno)));
+    }
+}
+
 ScopedFd CreateListenSocket(const std::string &host, int port, int backlog)
 {
     // 创建 socket

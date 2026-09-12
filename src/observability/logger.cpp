@@ -17,30 +17,12 @@ const char* LogLevelName(LogLevel level) noexcept
         { LogLevel::Info, "INFO" },
         { LogLevel::Warn, "WARN" },
         { LogLevel::Error, "ERROR" },
-        { LogLevel::Off, "OFF"}
+        { LogLevel::Off, "OFF" }
     };
 
     auto iter = logLevelMap.find(level);
     if (iter == logLevelMap.end()) {
         return "UNKNOWN";
-    }
-
-    return iter->second;
-}
-
-LogLevel ParseLogLevel(std::string_view value)
-{
-    static std::unordered_map<std::string_view, LogLevel> logValueMap = {
-        { "debug", LogLevel::Debug },
-        { "info", LogLevel::Info},
-        { "warn", LogLevel::Warn },
-        { "error", LogLevel::Error },
-        { "off", LogLevel::Off }
-    };
-
-    auto iter = logValueMap.find(value);
-    if (iter == logValueMap.end()) {
-        throw std::invalid_argument("log level must be debug, info, warn, error, or off");
     }
 
     return iter->second;

@@ -3,8 +3,7 @@
 #include "tinykv/net/wakeup/termination_signal_handler.h"
 #include "tinykv/net/wakeup/wakeup_channel.h"
 
-#include "test_utils.h"
-
+#include <gtest/gtest.h>
 #include <chrono>
 #include <csignal>
 #include <thread>
@@ -35,47 +34,37 @@ void RunWakeupContract(tinykv::PollerBackend backend)
     });
     const auto events = poller->Wait(std::chrono::milliseconds(500));
     notifier.join();
-    TINYKV_CHECK(ContainsReadableEvent(events, channel.ReadFd()));
+    EXPECT_TRUE(ContainsReadableEvent(events, channel.ReadFd()));
 
     channel.Drain();
     const auto afterDrain = poller->Wait(std::chrono::milliseconds(0));
-    TINYKV_CHECK(!ContainsReadableEvent(afterDrain, channel.ReadFd()));
+    EXPECT_FALSE(ContainsReadableEvent(afterDrain, channel.ReadFd()));
 }
 
-void TestPollWakeup()
+TEST(WakeupChannelTest, PollWakeup)
 {
     RunWakeupContract(tinykv::PollerBackend::Poll);
 }
 
-void TestEpollWakeup()
+TEST(WakeupChannelTest, EpollWakeup)
 {
 #if TINYKV_HAS_EPOLL
     RunWakeupContract(tinykv::PollerBackend::Epoll);
 #endif
 }
 
-void TestSignalWakeup()
+TEST(WakeupChannelTest, SignalWakeup)
 {
     auto poller = tinykv::PollerFactory::CreatePoller(tinykv::PollerBackend::Auto);
     tinykv::WakeupChannel channel;
     poller->Add(channel.ReadFd(), tinykv::IoEvent::Read);
 
     tinykv::TerminationSignalHandler signals(channel.WriteFd());
-    TINYKV_CHECK(::raise(SIGTERM) == 0);
+    EXPECT_EQ(::raise(SIGTERM), 0);
 
     const auto events = poller->Wait(std::chrono::milliseconds(500));
-    TINYKV_CHECK(ContainsReadableEvent(events, channel.ReadFd()));
+    EXPECT_TRUE(ContainsReadableEvent(events, channel.ReadFd()));
     channel.Drain();
 }
 
-}
-
-int main()
-{
-    TestPollWakeup();
-    TestEpollWakeup();
-    TestSignalWakeup();
-
-    std::cout << "wakeup handler test passed!\n";
-    return 0;
 }

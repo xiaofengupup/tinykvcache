@@ -1,9 +1,8 @@
-#include "test_utils.h"
-
 #include "tinykv/core/command_parser.h"
 #include "tinykv/core/command_executor.h"
 #include "tinykv/core/kv_store.h"
 
+#include <gtest/gtest.h>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -17,118 +16,99 @@ std::string ExecuteLine(tinykv::KVStore& store, const std::string& line)
     return tinykv::CommandExecutor::Execute(store, command);
 }
 
-void TestPingAndUnknown()
+TEST(CommandExecutorTest, PingAndUnknown)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "PING") == "+PONG");
-    TINYKV_CHECK(ExecuteLine(store, "ping") == "+PONG");
+    EXPECT_EQ(ExecuteLine(store, "PING"), "+PONG");
+    EXPECT_EQ(ExecuteLine(store, "ping"), "+PONG");
 
-    TINYKV_CHECK(ExecuteLine(store, "HELLO") == "-ERR unknown command");
-    TINYKV_CHECK(ExecuteLine(store, "SET only_key") == "-ERR unknown command");
+    EXPECT_EQ(ExecuteLine(store, "HELLO"), "-ERR unknown command");
+    EXPECT_EQ(ExecuteLine(store, "SET only_key"), "-ERR unknown command");
 }
 
-void TestSetAndGet()
+TEST(CommandExecutorTest, SetAndGet)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "SET name xiaofeng") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "GET name") == "$xiaofeng");
+    EXPECT_EQ(ExecuteLine(store, "SET name xiaofeng"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "GET name"), "$xiaofeng");
 }
 
-void TestSetValueWithSpaces()
+TEST(CommandExecutorTest, SetValueWithSpaces)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "SET sentence hello tiny kv cache") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "GET sentence") == "$hello tiny kv cache");
+    EXPECT_EQ(ExecuteLine(store, "SET sentence hello tiny kv cache"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "GET sentence"), "$hello tiny kv cache");
 }
 
-void TestDel()
+TEST(CommandExecutorTest, Del)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "SET name xiaofeng") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "DEL name") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "GET name") == "$nil");
-
+    EXPECT_EQ(ExecuteLine(store, "SET name xiaofeng"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "DEL name"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "GET name"), "$nil");
     // 删除不存在的 key，返回 $nil。
-    TINYKV_CHECK(ExecuteLine(store, "DEL name") == "$nil");
+    EXPECT_EQ(ExecuteLine(store, "DEL name"), "$nil");
 }
 
-void TestExpireAndTtl()
+TEST(CommandExecutorTest, ExpireAndTtl)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "SET temp value") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "EXPIRE temp 2") == "+OK");
+    EXPECT_EQ(ExecuteLine(store, "SET temp value"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "EXPIRE temp 2"), "+OK");
 
     const std::string ttl_response = ExecuteLine(store, "TTL temp");
 
-    TINYKV_CHECK(!ttl_response.empty());
-    TINYKV_CHECK(ttl_response[0] == '$');
+    EXPECT_FALSE(ttl_response.empty());
+    EXPECT_EQ(ttl_response[0], '$');
 
     const int ttl = std::stoi(ttl_response.substr(1));
-    TINYKV_CHECK(ttl >= 1);
-    TINYKV_CHECK(ttl <= 2);
+    EXPECT_GE(ttl, 1);
+    EXPECT_LE(ttl, 2);
 }
 
-void TestExpiredKeyShouldReturnNil()
+TEST(CommandExecutorTest, ExpiredKeyShouldReturnNil)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "SET temp value") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "EXPIRE temp 1") == "+OK");
+    EXPECT_EQ(ExecuteLine(store, "SET temp value"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "EXPIRE temp 1"), "+OK");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
-    TINYKV_CHECK(ExecuteLine(store, "GET temp") == "$nil");
-    TINYKV_CHECK(ExecuteLine(store, "TTL temp") == "$-2");
+    EXPECT_EQ(ExecuteLine(store, "GET temp"), "$nil");
+    EXPECT_EQ(ExecuteLine(store, "TTL temp"), "$-2");
 }
 
-void TestExpireMissingKey()
+TEST(CommandExecutorTest, ExpireMissingKeyShouldReturnNil)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "EXPIRE missing 10") == "$nil");
+    EXPECT_EQ(ExecuteLine(store, "EXPIRE missing 10"), "$nil");
 }
 
-void TestStats() {
+TEST(CommandExecutorTest, Stats)
+{
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "SET a 1") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "SET b 2") == "+OK");
-    TINYKV_CHECK(ExecuteLine(store, "EXPIRE b 10") == "+OK");
+    EXPECT_EQ(ExecuteLine(store, "SET a 1"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "SET b 2"), "+OK");
+    EXPECT_EQ(ExecuteLine(store, "EXPIRE b 10"), "+OK");
 
     const std::string response = ExecuteLine(store, "STATS");
 
-    TINYKV_CHECK(response == "+keys=2,persistent=1,expiring=1");
+    EXPECT_EQ(response, "+keys=2,persistent=1,expiring=1");
 }
 
-void TestQuit()
+TEST(CommandExecutorTest, Quit)
 {
     tinykv::KVStore store;
 
-    TINYKV_CHECK(ExecuteLine(store, "QUIT") == "+BYE");
+    EXPECT_EQ(ExecuteLine(store, "QUIT"), "+BYE");
 }
 
 }  // namespace
-
-int main() {
-    TestPingAndUnknown();
-
-    TestSetAndGet();
-    TestSetValueWithSpaces();
-
-    TestDel();
-
-    TestExpireAndTtl();
-    TestExpiredKeyShouldReturnNil();
-    TestExpireMissingKey();
-
-    TestStats();
-    TestQuit();
-
-    std::cout << "command executor tests passed\n";
-    return 0;
-}
