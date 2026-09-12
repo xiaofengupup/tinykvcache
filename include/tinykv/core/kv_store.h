@@ -28,7 +28,7 @@
 #include <vector>
 
 namespace tinykv {
-    
+
 class KVStore {
 public:
     /**
@@ -47,6 +47,7 @@ public:
         std::size_t processed {0};
         std::size_t removed {0};
         bool hasMoreExpired {false};
+        bool heapRebuilt {false};
     };
 
     KVStore() = default;
@@ -163,14 +164,20 @@ private:
     void EraseEntryLocked(DataIterator it);
     KVStore::SweepResult SweepExpiredLocked(TimePoint now, std::size_t maxRecordsToProcess = 1024);
 
+    // 解决 min heap 持续膨胀
+    bool ShouldRebuildExpirationHeapLocked() const noexcept;
+    void RebuildExpirationHeapLocked();
+
 private:
     std::mutex m_mutex;
     std::unordered_map<std::string, Entry> m_data;
-    std::priority_queue<ExpirationRecord, std::vector<ExpirationRecord>, ExpirationCompare> m_expirations;
     std::uint64_t m_nextExpirationGeneration {0};
 
     std::size_t m_persistentKeys {0};
     std::size_t m_expiringKeys {0};
+
+    using ExpirationQueue = std::priority_queue<ExpirationRecord, std::vector<ExpirationRecord>, ExpirationCompare>;
+    ExpirationQueue m_expirations;
 };
 
 } // namespace tinykv

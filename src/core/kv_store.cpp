@@ -5,6 +5,9 @@
 
 namespace tinykv {
 
+static constexpr std::size_t MIN_STALE_RECORDS_FOR_REBUILD = 1024;
+static constexpr std::size_t MIN_HEAP_RECORDS_FOR_REBUILD = 4096;
+
 bool KVStore::IsExpired(const Entry& entry, TimePoint now) const
 {
     if (!entry.expireAt.has_value()) {
@@ -208,7 +211,66 @@ KVStore::SweepResult KVStore::SweepExpired(std::size_t maxRecordsToProcess)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    return SweepExpiredLocked(Clock::now(), maxRecordsToProcess);
+    const auto now = Clock::now();
+    SweepResult result = SweepExpiredLocked(now, maxRecordsToProcess);
+
+    if (ShouldRebuildExpirationHeapLocked()) {
+        RebuildExpirationHeapLocked();
+        result.heapRebuilt = true;
+        result.hasMoreExpired = !m_expirations.empty() && m_expirations.top().expireAt <= now;
+    }
+
+    return result;
+}
+
+bool KVStore::ShouldRebuildExpirationHeapLocked() const noexcept
+{
+    const std::size_t heapSize = m_expirations.size();
+    if (heapSize == 0) {
+        return false;
+    }
+    
+    if (m_expiringKeys == 0) {
+        return true;
+    }
+
+    if (heapSize < MIN_HEAP_RECORDS_FOR_REBUILD) {
+        return false;
+    }
+
+    assert(heapSize >= m_expiringKeys);
+
+    const std::size_t staleRecords = heapSize - m_expiringKeys;
+    return staleRecords >= MIN_STALE_RECORDS_FOR_REBUILD &&
+           staleRecords >= m_expiringKeys;
+}
+
+void KVStore::RebuildExpirationHeapLocked()
+{
+    if (m_expiringKeys == 0) {
+        ExpirationQueue emptyHeap;
+        m_expirations.swap(emptyHeap);
+        return;
+    }
+
+    std::vector<ExpirationRecord> records;
+    records.reserve(m_expiringKeys);
+    for (const auto& [key, entry] : m_data) {
+        if (!entry.expireAt.has_value()) {
+            continue;
+        }
+
+        records.push_back({
+            entry.expireAt.value(),
+            key,
+            entry.generation
+        });
+    }
+
+    assert(records.size() == m_expiringKeys);
+
+    ExpirationQueue rebuilt(ExpirationCompare{}, std::move(records));
+    m_expirations.swap(rebuilt);
 }
 
 } // namespace tinykv
