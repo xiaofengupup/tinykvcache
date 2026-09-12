@@ -133,8 +133,8 @@ TEST(KVStoreTest, SweepExpired)
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
-    const std::size_t removed = store.SweepExpired();
-    EXPECT_EQ(removed, 2);
+    const tinykv::KVStore::SweepResult result = store.SweepExpired();
+    EXPECT_EQ(result.removed, 2);
     EXPECT_EQ(store.Size(), 1);
 
     std::string value;

@@ -420,12 +420,16 @@ void TcpServer::SweeperLoop()
         // 不要持有 m_sweeperMutex 调用 KVStore，KVStore 内部有自己的 mutex
         lock.unlock();
 
-        const size_t removed = m_store.SweepExpired();
-        m_metrics.OnSweeperRun(removed);
-        if (removed > 0) {
-            TINYKV_LOG_DEBUG("[sweeper] removed expired keys, count={}", removed);
-        }
-        
+        KVStore::SweepResult result;
+        do {
+            result = m_store.SweepExpired();
+            m_metrics.OnSweeperRun(result.removed);
+            if (result.removed > 0) {
+                TINYKV_LOG_DEBUG("[sweeper] removed expired keys, processed={}, removed={}, more={}",
+                    result.processed, result.removed, result.hasMoreExpired);
+            }
+        } while (result.hasMoreExpired && !m_stopRequested.load());
+
         lock.lock();
     }
 }

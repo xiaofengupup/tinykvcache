@@ -1,6 +1,7 @@
 #include "tinykv/core/kv_store.h"
 
 #include <chrono>
+#include <cassert>
 
 namespace tinykv {
 
@@ -13,30 +14,79 @@ bool KVStore::IsExpired(const Entry& entry, TimePoint now) const
     return now >= entry.expireAt.value();
 }
 
-std::size_t KVStore::SweepExpiredLocked(TimePoint now)
+void KVStore::EraseEntryLocked(DataIterator it)
 {
-    std::size_t removed = 0;
-
-    for (auto it = m_data.begin(); it != m_data.end();) {
-        if (IsExpired(it->second, now)) {
-            it = m_data.erase(it);
-            ++removed;
-        } else {
-            ++it;
-        }
+    if (it->second.expireAt.has_value()) {
+        assert(m_expiringKeys > 0);
+        --m_expiringKeys;
+    } else {
+        assert(m_persistentKeys > 0);
+        --m_persistentKeys;
     }
 
-    return removed;
+    m_data.erase(it);
+}
+
+KVStore::SweepResult KVStore::SweepExpiredLocked(TimePoint now, std::size_t maxRecordsToProcess)
+{
+    KVStore::SweepResult result;
+
+    while (!m_expirations.empty() && result.processed < maxRecordsToProcess) {
+        const ExpirationRecord record = m_expirations.top();
+        if (record.expireAt > now) {
+            break;
+        }
+
+        m_expirations.pop();
+        ++result.processed;
+
+        auto it = m_data.find(record.key);
+        if (it == m_data.end()) {
+            continue;
+        }
+
+        Entry& entry = it->second;
+        if (entry.generation != record.generation) {
+            continue;
+        }
+        if (!entry.expireAt.has_value()) {
+            continue;
+        }
+        if (entry.expireAt.value() != record.expireAt) {
+            continue;
+        }
+
+        EraseEntryLocked(it);
+        ++result.removed;
+    }
+
+    result.hasMoreExpired = (!m_expirations.empty()) && (m_expirations.top().expireAt <= now);
+    return result;
 }
 
 void KVStore::Set(const std::string& key, const std::string& value)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    Entry entry;
-    entry.value = value;
+    auto it = m_data.find(key);
+    if (it == m_data.end()) {
+        Entry entry;
+        entry.value = value;
+        m_data.emplace(key, std::move(entry));
 
-    m_data[key] = std::move(entry);
+        ++m_persistentKeys;
+        return;
+    }
+
+    Entry& entry = it->second;
+    if (entry.expireAt.has_value()) {
+        --m_expiringKeys;
+        ++m_persistentKeys;
+    }
+
+    entry.value = value;
+    entry.expireAt.reset();
+    ++entry.generation;
 }
 
 bool KVStore::Get(const std::string &key, std::string &value)
@@ -50,7 +100,7 @@ bool KVStore::Get(const std::string &key, std::string &value)
     }
 
     if (IsExpired(it->second, now)) {
-        m_data.erase(it);
+        EraseEntryLocked(it);
         return false;
     }
 
@@ -69,11 +119,11 @@ bool KVStore::Del(const std::string &key)
     }
 
     if (IsExpired(it->second, now)) {
-        m_data.erase(it);
+        EraseEntryLocked(it);
         return false;
     }
 
-    m_data.erase(it);
+    EraseEntryLocked(it);
     return true;
 }
 
@@ -92,11 +142,24 @@ bool KVStore::Expire(const std::string& key, int seconds)
     }
 
     if (IsExpired(it->second, now)) {
-        m_data.erase(it);
+        EraseEntryLocked(it);
         return false;
     }
 
+    if (!it->second.expireAt.has_value()) {
+        assert(m_persistentKeys > 0);
+        --m_persistentKeys;
+        ++m_expiringKeys;
+    }
+
     it->second.expireAt = now + std::chrono::seconds(seconds);
+    it->second.generation = ++m_nextExpirationGeneration;
+    m_expirations.push(ExpirationRecord{
+        it->second.expireAt.value(),
+        key,
+        it->second.generation
+    });
+
     return true;
 }
 
@@ -109,8 +172,9 @@ int KVStore::Ttl(const std::string& key)
     if (it == m_data.end()) {
         return -2;
     }
+
     if (IsExpired(it->second, now)) {
-        m_data.erase(it);
+        EraseEntryLocked(it);
         return -2;
     }
 
@@ -119,57 +183,32 @@ int KVStore::Ttl(const std::string& key)
     }
 
     const auto remaining = it->second.expireAt.value() - now;
-    const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
-    if (remainingMs <= 0) {
-        m_data.erase(it);
-        return -2;
-    }
-
-    // 向上取整到秒。
-    // 例如还剩 1500ms，返回 2；
-    // 还剩 1ms，也返回 1。
-    return static_cast<int>((remainingMs + 999) / 1000);
+    return static_cast<int>(std::chrono::ceil<std::chrono::seconds>(remaining).count());
 }
 
 std::size_t KVStore::Size()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto now = Clock::now();
-
-    SweepExpiredLocked(now);
-    
-    return m_data.size();
+    return m_persistentKeys + m_expiringKeys;
 }
 
 KVStore::InnerStats KVStore::Stats()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto now = Clock::now();
-
-    SweepExpiredLocked(now);
 
     InnerStats result;
-    result.keys = m_data.size();
-
-    for (const auto &item : m_data) {
-        const Entry& entry = item.second;
-
-        if (entry.expireAt.has_value()) {
-            ++result.expiringKeys;
-        } else {
-            ++result.persistentKeys;
-        }
-    }
+    result.keys = m_persistentKeys + m_expiringKeys;
+    result.expiringKeys = m_expiringKeys;
+    result.persistentKeys = m_persistentKeys;
 
     return result;
 }
 
-std::size_t KVStore::SweepExpired()
+KVStore::SweepResult KVStore::SweepExpired(std::size_t maxRecordsToProcess)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto now = Clock::now();
 
-    return SweepExpiredLocked(now);
+    return SweepExpiredLocked(Clock::now(), maxRecordsToProcess);
 }
 
 } // namespace tinykv
